@@ -89,11 +89,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-#### Configure API Key locally
-Create a `.streamlit/secrets.toml` file or a `.env` file:
+#### Configure Secrets locally
+Create a `.streamlit/secrets.toml` file (or set in environment variables):
 ```toml
 # .streamlit/secrets.toml
+
+# Groq API Key (Required)
 GROQ_API_KEY = "gsk_your_groq_api_key_here"
+
+# Google OAuth2 Sign-In (Optional but recommended for 1-click Google Sign-In)
+# Obtain these from Google Cloud Console -> APIs & Services -> Credentials -> OAuth 2.0 Client IDs
+GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET = "GOCSPX-your-client-secret"
+GOOGLE_REDIRECT_URI = "http://localhost:8501/"  # In production: "https://your-app.streamlit.app/"
 ```
 Or export via terminal:
 ```powershell
@@ -107,11 +115,21 @@ streamlit run app.py
 
 ---
 
+## 🔐 Authentication & Session Persistence (No Data Loss on Ctrl+R)
+
+- **Google Sign-In**: Authenticate securely using your Google account with OAuth2.
+- **Account Resume**: You can also sign in or create an account with your email address.
+- **No Data Loss on Refresh (`Ctrl + R`)**: User sessions and candidate IDs are automatically persisted in SQLite and synchronized with the browser URL (`?uid=...`). Refreshing the browser or returning to the tab retains your logged-in state, resume analysis, and persistent Knowledge Graph memory.
+- **Memory Backup & Restore**: Download and upload full JSON backups of your Knowledge Graph directly from the sidebar.
+
+---
+
 ## 🎯 How to Use
 
-1. **Candidate Profile & Target Role**: In the sidebar, set your candidate profile name (memory persists under this profile) and target role.
-2. **Upload Resume & Paste JD**: In the setup screen, upload your resume (`.pdf` or `.txt`) and paste the target job description. Click **⚡ Parse Resume & JD into Knowledge Graph** to extract key claims and focus areas.
-3. **Start Interview**: Click **🚀 Start Interview** to begin. The interviewer will introduce themselves and ask an opening question directly targeting a project or claim from your background.
-4. **Listen & Speak**: The interviewer will speak aloud automatically. Use the microphone recorder to speak your answer and press stop to submit.
-5. **Iterate**: The interviewer will challenge ambiguities, test your claimed depth, ask follow-up questions, or advance to new topics.
-6. **Get Evaluated**: Click **🏁 Finish Interview & Get Scorecard** when you're done to review your rating, JD alignment, resume verification, dimension breakdown, filler word count, and model STAR answers.
+1. **Sign In**: Log in with Google or your email. Your candidate identity and Knowledge Graph memory are tied directly to your account.
+2. **Configure Role & Interviewer**: In the sidebar, select your target role, experience level, interviewer demeanor, and Groq model.
+3. **Upload Resume & Paste JD**: Upload your resume (`.pdf` or `.txt`) and paste the job description. Click **⚡ Parse Resume & JD into Knowledge Graph** to extract claims and probe areas.
+4. **Start Interview**: Click **🚀 Start Interview** to begin. The interviewer introduces themselves and asks a tailored opening question.
+5. **Listen & Speak**: The interviewer speaks aloud automatically via browser TTS. Use the microphone recorder to speak your answer and press stop to submit.
+6. **Iterate**: The interviewer challenges ambiguities, tests technical tradeoffs, asks follow-up questions, or transitions to new topics.
+7. **Get Evaluated**: Click **🏁 Finish Interview & Get Scorecard** when you're done to review your rating, JD alignment, resume verification, dimension breakdown, filler word count, and model STAR answers.

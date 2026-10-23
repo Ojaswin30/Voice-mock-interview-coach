@@ -12,6 +12,7 @@ __pycache__/
 .pytest_cache/
 
 # Streamlit
+.streamlit/*
 .streamlit/secrets.toml
 
 # Environment variables

@@ -22,6 +22,13 @@ from resume_jd_parser import (
     analyze_resume_and_jd,
     seed_graph_from_resume_and_jd,
 )
+from auth import (
+    UserManager,
+    get_google_oauth_config,
+    get_google_auth_url,
+    exchange_code_for_user,
+    verify_google_id_token,
+)
 
 load_dotenv()
 
@@ -48,38 +55,12 @@ def load_whisper_model(model_size: str = "base"):
         return WhisperModel(model_size, device="cpu", compute_type="float32")
 
 
-@st.cache_resource(show_spinner=False)
 def get_memory_graph() -> CandidateMemoryGraph:
-    """Initializes and caches the SQLite-backed candidate memory graph."""
+    """Initializes the SQLite-backed candidate memory graph."""
     return CandidateMemoryGraph(db_path="candidate_memory.db")
 
 
-def get_or_create_candidate_id() -> str:
-    """
-    Returns an immutable, unguessable unique identifier for the candidate session.
-    Preserves identity across browser refreshes via URL query parameter (?cid=cand_...).
-    Ensures complete private isolation between different users on the shared global database.
-    """
-    if "candidate_id" in st.session_state and st.session_state.candidate_id:
-        return st.session_state.candidate_id
-
-    cid = ""
-    try:
-        cid = st.query_params.get("cid", "")
-        if not (cid and re.match(r"^cand_[a-f0-9]{12,32}$", cid)):
-            cid = ""
-    except Exception:
-        pass
-
-    if not cid:
-        cid = f"cand_{uuid.uuid4().hex[:16]}"
-        try:
-            st.query_params["cid"] = cid
-        except Exception:
-            pass
-
-    st.session_state.candidate_id = cid
-    return cid
+user_manager = UserManager(db_path="candidate_memory.db")
 
 
 def resolve_groq_api_key() -> str:
@@ -757,6 +738,8 @@ def init_session_state():
         st.session_state.jd_text = ""
     if "resume_analysis" not in st.session_state:
         st.session_state.resume_analysis = None
+    if "user" not in st.session_state:
+        st.session_state.user = None
 
 
 init_session_state()
@@ -780,42 +763,161 @@ if not groq_client:
 
 
 # ---------------------------------------------------------
-# Sidebar Configuration
+# User Authentication & Google Sign-In
+# ---------------------------------------------------------
+oauth_cfg = get_google_oauth_config()
+
+# 1. Handle Google ID token (?google_token=...) or OAuth code (?code=...) callback
+google_token = st.query_params.get("google_token")
+if google_token:
+    with st.spinner("Authenticating with Google..."):
+        google_user = verify_google_id_token(google_token)
+        if google_user:
+            user_id = f"google_{google_user.get('sub', '')}"
+            db_user = user_manager.upsert_user(
+                user_id=user_id,
+                email=google_user.get("email", ""),
+                name=google_user.get("name", "Google User"),
+                picture_url=google_user.get("picture", ""),
+            )
+            st.session_state.user = db_user
+            st.session_state.candidate_id = user_id
+            st.query_params["uid"] = user_id
+            try:
+                del st.query_params["google_token"]
+            except Exception:
+                pass
+            st.rerun()
+
+auth_code = st.query_params.get("code")
+if auth_code and oauth_cfg.get("client_id") and oauth_cfg.get("client_secret"):
+    with st.spinner("Authenticating with Google..."):
+        google_user = exchange_code_for_user(auth_code, oauth_cfg)
+        if google_user:
+            user_id = f"google_{google_user.get('sub', '')}"
+            db_user = user_manager.upsert_user(
+                user_id=user_id,
+                email=google_user.get("email", ""),
+                name=google_user.get("name", "Google User"),
+                picture_url=google_user.get("picture", ""),
+            )
+            st.session_state.user = db_user
+            st.session_state.candidate_id = user_id
+            st.query_params["uid"] = user_id
+            try:
+                del st.query_params["code"]
+            except Exception:
+                pass
+            st.rerun()
+
+# 2. Restore user session from persistent URL param (?uid=...) across Ctrl+R / refresh
+if not st.session_state.get("user"):
+    uid_param = st.query_params.get("uid")
+    if uid_param:
+        existing_user = user_manager.get_user_by_id(uid_param)
+        if existing_user:
+            st.session_state.user = existing_user
+            st.session_state.candidate_id = existing_user["id"]
+
+# 3. If not signed in, show Sign-In portal
+if not st.session_state.get("user"):
+    st.title("🎙️ Voice Mock-Interview Coach")
+    st.markdown("Sign in to sync your **Knowledge Graph memory**, **resume claims**, and **interview performance** permanently to your account.")
+
+    col_login, _ = st.columns([4, 3])
+    with col_login:
+        st.markdown("### 🔐 Sign In")
+
+        has_google_secret = bool(oauth_cfg.get("client_secret"))
+        has_google_client = bool(oauth_cfg.get("client_id"))
+
+        if has_google_client and has_google_secret:
+            google_auth_url = get_google_auth_url(oauth_cfg)
+            st.markdown(
+                f"""
+                <a href="{google_auth_url}" target="_self" style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 12px;
+                    width: 100%;
+                    background-color: #ffffff;
+                    color: #1f2937;
+                    border: 1px solid #d1d5db;
+                    border-radius: 8px;
+                    padding: 12px 20px;
+                    font-size: 15px;
+                    font-weight: 500;
+                    text-decoration: none;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    margin-bottom: 16px;
+                ">
+                    <svg width="20" height="20" viewBox="0 0 48 48">
+                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                    </svg>
+                    Sign in with Google
+                </a>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div style='text-align: center; color: #6b7280; margin-bottom: 12px;'>— OR —</div>", unsafe_allow_html=True)
+        elif has_google_client and not has_google_secret:
+            st.info(
+                f"🔑 **Google Client ID loaded:** `{oauth_cfg.get('client_id')[:20]}...`\n\n"
+                "To enable 1-click Google OAuth, please also provide `GOOGLE_CLIENT_SECRET` (from your Google Cloud Console credentials, starts with `GOCSPX-`) in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
+            )
+        else:
+            st.info(
+                "💡 **Google Sign-In Available**: To enable official 1-click Google OAuth, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
+            )
+
+        st.markdown("**Account Sign-In / Resume**")
+        email_in = st.text_input("Enter your email address:", placeholder="candidate@example.com", key="auth_email_field")
+        name_in = st.text_input("Your display name (optional):", placeholder="Your Name", key="auth_name_field")
+        if st.button("Sign In / Create Account", type="primary", use_container_width=True):
+            if not email_in or "@" not in email_in:
+                st.warning("Please enter a valid email address.")
+            else:
+                c_email = email_in.strip().lower()
+                c_name = name_in.strip() or c_email.split("@")[0].title()
+                uid = f"usr_{hashlib.md5(c_email.encode()).hexdigest()[:16]}"
+                db_u = user_manager.upsert_user(uid, c_email, c_name, "")
+                st.session_state.user = db_u
+                st.session_state.candidate_id = uid
+                st.query_params["uid"] = uid
+                st.success(f"Welcome, {c_name}!")
+                st.rerun()
+
+    st.stop()
+
+
+# ---------------------------------------------------------
+# Sidebar Configuration (Authenticated)
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("🎙️ Interview Settings")
 
-    # Unique Candidate Session Identifier (Immutable & Isolated in DB)
-    candidate_id = get_or_create_candidate_id()
+    current_user = st.session_state.user
+    candidate_id = current_user["id"]
+    candidate_name = current_user.get("name", "Candidate")
 
-    # User's Display Name (defaults to Candidate 1 or name extracted from resume)
-    default_name = "Candidate 1"
-    if st.session_state.get("resume_analysis") and st.session_state.resume_analysis.get("candidate_name"):
-        default_name = st.session_state.resume_analysis["candidate_name"]
-    elif "candidate_display_name" in st.session_state:
-        default_name = st.session_state.candidate_display_name
+    st.markdown(f"👤 **{candidate_name}**")
+    st.caption(f"📧 `{current_user.get('email', '')}`")
 
-    candidate_name = st.text_input(
-        "Candidate Name",
-        value=default_name,
-        help="Your name used by the interviewer in conversations.",
-        key="candidate_name_input",
-    )
-    st.session_state.candidate_display_name = candidate_name
-
-    st.caption(f"🔒 **Private Profile ID:** `{candidate_id}`")
-
-    if st.button("🆕 Start New Profile / Session", help="Generates a new isolated candidate ID and starts fresh", use_container_width=True):
-        new_cid = f"cand_{uuid.uuid4().hex[:16]}"
-        st.session_state.candidate_id = new_cid
-        try:
-            st.query_params["cid"] = new_cid
-        except Exception:
-            pass
+    if st.button("🚪 Log Out", use_container_width=True):
+        st.session_state.user = None
+        st.session_state.candidate_id = None
         st.session_state.messages = []
         st.session_state.interview_started = False
         st.session_state.interview_completed = False
         st.session_state.resume_analysis = None
+        try:
+            del st.query_params["uid"]
+        except Exception:
+            pass
         st.rerun()
 
     st.markdown("---")

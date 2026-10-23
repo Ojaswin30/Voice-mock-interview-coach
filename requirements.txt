@@ -4,3 +4,4 @@ av<19.0.0
 groq>=0.11.0
 python-dotenv>=1.0.0
 pypdf>=5.0.0
+requests>=2.28.0
