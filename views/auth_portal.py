@@ -7,20 +7,120 @@ import os
 import time
 import base64
 import hashlib
+import urllib.parse
+from typing import Optional, Dict, Any
+import requests
 import streamlit as st
 
 from auth import (
     UserManager,
-    get_google_oauth_config,
-    get_google_auth_url,
-    exchange_code_for_user,
-    verify_google_id_token,
-    get_github_oauth_config,
-    get_github_auth_url,
-    exchange_github_code_for_user,
     generate_otp,
     send_otp_email,
 )
+
+# Robust import with graceful fallback in case deployment has cached bytecode
+try:
+    from auth import (
+        get_google_oauth_config,
+        get_google_auth_url,
+        exchange_code_for_user,
+        verify_google_id_token,
+    )
+except ImportError:
+    pass
+
+try:
+    from auth import (
+        get_github_oauth_config,
+        get_github_auth_url,
+        exchange_github_code_for_user,
+    )
+except ImportError:
+    def get_github_oauth_config() -> Dict[str, str]:
+        """Fallback GitHub OAuth config resolution if auth.py is cached on deployment."""
+        client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+        try:
+            if hasattr(st, "secrets"):
+                if "GITHUB_CLIENT_ID" in st.secrets:
+                    client_id = str(st.secrets["GITHUB_CLIENT_ID"]).strip()
+                if "GITHUB_CLIENT_SECRET" in st.secrets:
+                    client_secret = str(st.secrets["GITHUB_CLIENT_SECRET"]).strip()
+                if "github" in st.secrets:
+                    if "client_id" in st.secrets["github"]:
+                        client_id = str(st.secrets["github"]["client_id"]).strip()
+                    if "client_secret" in st.secrets["github"]:
+                        client_secret = str(st.secrets["github"]["client_secret"]).strip()
+        except Exception:
+            pass
+        redirect_uri = (
+            os.environ.get("GITHUB_REDIRECT_URI", "").strip()
+            or "https://voice-mock-interview-coach.streamlit.app/"
+        )
+        return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+
+    def get_github_auth_url(config: Dict[str, str]) -> str:
+        """Fallback GitHub OAuth URL generator."""
+        params = {
+            "client_id": config.get("client_id", ""),
+            "redirect_uri": config.get("redirect_uri", ""),
+            "scope": "read:user user:email",
+            "allow_signup": "true",
+        }
+        return f"https://github.com/login/oauth/authorize?{urllib.parse.urlencode(params)}"
+
+    def exchange_github_code_for_user(
+        code: str, config: Dict[str, str]
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback GitHub OAuth token exchanger."""
+        try:
+            token_resp = requests.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": config["client_id"],
+                    "client_secret": config["client_secret"],
+                    "code": code,
+                    "redirect_uri": config["redirect_uri"],
+                },
+                timeout=10,
+            )
+            if not token_resp.ok:
+                return None
+            tokens = token_resp.json()
+            access_token = tokens.get("access_token")
+            if not access_token:
+                return None
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+            }
+            user_resp = requests.get(
+                "https://api.github.com/user", headers=headers, timeout=10
+            )
+            if not user_resp.ok:
+                return None
+            u = user_resp.json()
+            email = u.get("email")
+            if not email:
+                emails_resp = requests.get(
+                    "https://api.github.com/user/emails", headers=headers, timeout=10
+                )
+                if emails_resp.ok:
+                    for em in emails_resp.json():
+                        if em.get("primary") and em.get("verified"):
+                            email = em.get("email")
+                            break
+                        if not email:
+                            email = em.get("email")
+            return {
+                "sub": str(u.get("id")),
+                "name": u.get("name") or u.get("login") or "GitHub User",
+                "email": email or f"github_{u.get('id')}@users.noreply.github.com",
+                "picture": u.get("avatar_url", ""),
+            }
+        except Exception:
+            return None
 
 
 def handle_oauth_callbacks(user_manager: UserManager):
