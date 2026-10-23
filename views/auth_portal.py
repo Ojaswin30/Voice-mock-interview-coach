@@ -309,19 +309,15 @@ def get_background_base64() -> str:
 # -----------------------------------------------------------------------------
 # Authentication Dialogs: Sign-In, GitHub Setup, and Encrypted Registration
 # -----------------------------------------------------------------------------
-def _on_dialog_dismiss():
-    st.session_state.active_dialog = None
-
-dialog_kwargs = {}
-try:
-    import inspect
-    if "on_dismiss" in inspect.signature(st.dialog).parameters:
-        dialog_kwargs["on_dismiss"] = _on_dialog_dismiss
-except Exception:
-    pass
+def _rerun_dialog():
+    """Reruns only the modal dialog fragment without triggering a full-app reload or closing the modal."""
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
 
 
-@st.dialog("🔑 Sign In to Existing Account", **dialog_kwargs)
+@st.dialog("🔑 Sign In to Existing Account")
 def signin_dialog(user_manager: Any):
     step = st.session_state.get("signin_step", 1)
 
@@ -372,7 +368,7 @@ def signin_dialog(user_manager: Any):
                 st.session_state.signin_otp_sent = sent
                 st.session_state.signin_otp_msg = msg
                 st.session_state.active_dialog = "signin"
-                st.rerun()
+                _rerun_dialog()
 
         with col_cancel:
             if st.button("Cancel", use_container_width=True):
@@ -443,7 +439,7 @@ def signin_dialog(user_manager: Any):
         with col_back:
             if st.button("← Back", use_container_width=True):
                 st.session_state.signin_step = 1
-                st.rerun()
+                _rerun_dialog()
         with col_cancel:
             if st.button("Cancel", use_container_width=True, key="dlg_signin_step2_cancel"):
                 st.session_state.active_dialog = None
@@ -451,7 +447,7 @@ def signin_dialog(user_manager: Any):
                 st.rerun()
 
 
-@st.dialog("🐙 GitHub Authentication Setup", **dialog_kwargs)
+@st.dialog("🐙 GitHub Authentication Setup")
 def github_setup_dialog():
     st.markdown(
         """
@@ -479,7 +475,7 @@ def github_setup_dialog():
         st.rerun()
 
 
-@st.dialog("✨ Sign Up as a New Candidate", **dialog_kwargs)
+@st.dialog("✨ Sign Up as a New Candidate")
 def signup_dialog(user_manager: Any):
     step = st.session_state.get("signup_step", 1)
 
@@ -571,7 +567,7 @@ def signup_dialog(user_manager: Any):
                 st.session_state.signup_otp_sent = sent
                 st.session_state.signup_otp_msg = msg
                 st.session_state.active_dialog = "signup"
-                st.rerun()
+                _rerun_dialog()
 
         with col_cancel:
             if st.button("Cancel", use_container_width=True):
@@ -643,7 +639,7 @@ def signup_dialog(user_manager: Any):
         with col_back:
             if st.button("← Back", use_container_width=True):
                 st.session_state.signup_step = 1
-                st.rerun()
+                _rerun_dialog()
         with col_cancel:
             if st.button("Cancel", use_container_width=True, key="dlg_signup_step2_cancel"):
                 st.session_state.active_dialog = None
