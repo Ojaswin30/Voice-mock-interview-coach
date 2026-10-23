@@ -8,7 +8,7 @@ from typing import List, Optional
 import streamlit as st
 from groq import Groq
 
-from views.speech import render_speech_player
+from .speech import render_speech_player
 
 
 def resolve_groq_api_key() -> str:

@@ -25,7 +25,7 @@ from resume_jd_parser import (
     analyze_resume_and_jd,
     seed_graph_from_resume_and_jd,
 )
-from views.speech import render_speech_player
+from .speech import render_speech_player
 
 
 # ---------------------------------------------------------

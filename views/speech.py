@@ -3,6 +3,7 @@ Speech Synthesis (TTS) Component using native Browser Web Speech API.
 Provides zero-latency, zero-cost, streaming natural voices with autoplay, replay, and speed controls.
 """
 import json
+import streamlit as st
 import streamlit.components.v1 as components
 
 
@@ -256,4 +257,7 @@ def render_speech_player(text: str, auto_play: bool = True, key_id: str = "tts_d
     </body>
     </html>
     """
-    components.html(html_code, height=65, scrolling=False)
+    if hasattr(st, "iframe"):
+        st.iframe(html_code, height=65)
+    else:
+        components.html(html_code, height=65, scrolling=False)
