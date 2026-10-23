@@ -6,6 +6,9 @@ and modular view dispatching.
 import streamlit as st
 from dotenv import load_dotenv
 
+# Load local environment variables immediately before any view imports
+load_dotenv()
+
 from memory_graph import CandidateMemoryGraph
 from auth import UserManager
 from views import (
@@ -20,8 +23,6 @@ from views import (
     get_groq_client,
     fetch_available_groq_models,
 )
-
-load_dotenv()
 
 # Set page configuration
 st.set_page_config(
