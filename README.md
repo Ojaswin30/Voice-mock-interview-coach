@@ -77,8 +77,8 @@ When deployed on Streamlit Cloud, the SQLite database (`candidate_memory.db`) re
 ### 2. Local Setup
 ```bash
 # Clone repository
-git clone <repo-url>
-cd "Voice mock-interview coach"
+git clone https://github.com/Ojaswin30/Voice-mock-interview-coach.git
+cd Voice-mock-interview-coach
 
 # Create & activate virtual environment
 python -m venv .venv
