@@ -854,7 +854,6 @@ if not st.session_state.get("user"):
         if has_native_auth:
             if st.button("Sign in with Google", type="primary", use_container_width=True):
                 st.login()
-            st.markdown("<div style='text-align: center; color: #6b7280; margin: 8px 0;'>— OR —</div>", unsafe_allow_html=True)
         elif has_google_client and has_google_secret:
             google_auth_url = get_google_auth_url(oauth_cfg)
             st.markdown(
@@ -887,32 +886,16 @@ if not st.session_state.get("user"):
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='text-align: center; color: #6b7280; margin-bottom: 12px;'>— OR —</div>", unsafe_allow_html=True)
         elif has_google_client and not has_google_secret:
             st.info(
-                f"🔑 **Google Client ID loaded:** `{oauth_cfg.get('client_id')[:20]}...`\n\n"
-                "To enable 1-click Google OAuth, please also provide `GOOGLE_CLIENT_SECRET` (from your Google Cloud Console credentials, starts with `GOCSPX-`) in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
+                f"🔑 **Google Client ID loaded:** `{oauth_cfg.get('client_id')[:24]}...`\n\n"
+                "To activate Google Sign-In, please provide your **`GOOGLE_CLIENT_SECRET`** (found in Google Cloud Console right next to your Client ID, starts with `GOCSPX-`).\n\n"
+                "Add it in `.streamlit/secrets.toml` or Streamlit Cloud Settings → Secrets."
             )
         else:
             st.info(
-                "💡 **Google Sign-In Available**: To enable official 1-click Google OAuth, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
+                "💡 **Google Sign-In Required**: To enable Google authentication, configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
             )
-
-        st.markdown("**Account Sign-In / Resume**")
-        email_in = st.text_input("Enter your email address:", placeholder="candidate@example.com", key="auth_email_field")
-        name_in = st.text_input("Your display name (optional):", placeholder="Your Name", key="auth_name_field")
-        if st.button("Sign In / Create Account", type="primary", use_container_width=True):
-            if not email_in or "@" not in email_in:
-                st.warning("Please enter a valid email address.")
-            else:
-                c_email = email_in.strip().lower()
-                c_name = name_in.strip() or c_email.split("@")[0].title()
-                uid = f"usr_{hashlib.md5(c_email.encode()).hexdigest()[:16]}"
-                db_u = user_manager.upsert_user(uid, c_email, c_name, "")
-                st.session_state.user = db_u
-                st.session_state.candidate_id = uid
-                st.success(f"Welcome, {c_name}!")
-                st.rerun()
 
     st.stop()
 
