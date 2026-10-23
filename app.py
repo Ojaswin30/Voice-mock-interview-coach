@@ -767,9 +767,31 @@ if not groq_client:
 # ---------------------------------------------------------
 oauth_cfg = get_google_oauth_config()
 
-# 1. Handle Google ID token (?google_token=...) or OAuth code (?code=...) callback
+# Always clean up legacy or malicious cid/uid query params to prevent unauthorized URL-based session hijacking
+if "cid" in st.query_params:
+    try:
+        del st.query_params["cid"]
+    except Exception:
+        pass
+if "uid" in st.query_params:
+    try:
+        del st.query_params["uid"]
+    except Exception:
+        pass
+
+# 1. Native Streamlit OpenID Connect (st.login / st.user) integration
+if hasattr(st, "user") and getattr(st.user, "is_logged_in", False):
+    user_email = getattr(st.user, "email", "") or ""
+    user_name = getattr(st.user, "name", "") or (user_email.split("@")[0].title() if user_email else "Candidate")
+    user_sub = getattr(st.user, "sub", "") or hashlib.md5(user_email.encode()).hexdigest()[:16]
+    user_id = f"google_{user_sub}"
+    db_user = user_manager.upsert_user(user_id, user_email, user_name, "")
+    st.session_state.user = db_user
+    st.session_state.candidate_id = user_id
+
+# 2. Handle Google ID token (?google_token=...) callback
 google_token = st.query_params.get("google_token")
-if google_token:
+if google_token and not st.session_state.get("user"):
     with st.spinner("Authenticating with Google..."):
         google_user = verify_google_id_token(google_token)
         if google_user:
@@ -782,15 +804,15 @@ if google_token:
             )
             st.session_state.user = db_user
             st.session_state.candidate_id = user_id
-            st.query_params["uid"] = user_id
             try:
                 del st.query_params["google_token"]
             except Exception:
                 pass
             st.rerun()
 
+# 3. Handle Google OAuth code (?code=...) callback
 auth_code = st.query_params.get("code")
-if auth_code and oauth_cfg.get("client_id") and oauth_cfg.get("client_secret"):
+if auth_code and oauth_cfg.get("client_id") and oauth_cfg.get("client_secret") and not st.session_state.get("user"):
     with st.spinner("Authenticating with Google..."):
         google_user = exchange_code_for_user(auth_code, oauth_cfg)
         if google_user:
@@ -803,23 +825,13 @@ if auth_code and oauth_cfg.get("client_id") and oauth_cfg.get("client_secret"):
             )
             st.session_state.user = db_user
             st.session_state.candidate_id = user_id
-            st.query_params["uid"] = user_id
             try:
                 del st.query_params["code"]
             except Exception:
                 pass
             st.rerun()
 
-# 2. Restore user session from persistent URL param (?uid=...) across Ctrl+R / refresh
-if not st.session_state.get("user"):
-    uid_param = st.query_params.get("uid")
-    if uid_param:
-        existing_user = user_manager.get_user_by_id(uid_param)
-        if existing_user:
-            st.session_state.user = existing_user
-            st.session_state.candidate_id = existing_user["id"]
-
-# 3. If not signed in, show Sign-In portal
+# 4. If not signed in, show Sign-In portal (NEVER auto-log in via unauthenticated URL parameters)
 if not st.session_state.get("user"):
     st.title("🎙️ Voice Mock-Interview Coach")
     st.markdown("Sign in to sync your **Knowledge Graph memory**, **resume claims**, and **interview performance** permanently to your account.")
@@ -828,10 +840,22 @@ if not st.session_state.get("user"):
     with col_login:
         st.markdown("### 🔐 Sign In")
 
+        # Native Streamlit OIDC Login if configured in secrets [auth]
+        has_native_auth = False
+        try:
+            if "auth" in st.secrets and hasattr(st, "login"):
+                has_native_auth = True
+        except Exception:
+            pass
+
         has_google_secret = bool(oauth_cfg.get("client_secret"))
         has_google_client = bool(oauth_cfg.get("client_id"))
 
-        if has_google_client and has_google_secret:
+        if has_native_auth:
+            if st.button("Sign in with Google", type="primary", use_container_width=True):
+                st.login()
+            st.markdown("<div style='text-align: center; color: #6b7280; margin: 8px 0;'>— OR —</div>", unsafe_allow_html=True)
+        elif has_google_client and has_google_secret:
             google_auth_url = get_google_auth_url(oauth_cfg)
             st.markdown(
                 f"""
@@ -887,7 +911,6 @@ if not st.session_state.get("user"):
                 db_u = user_manager.upsert_user(uid, c_email, c_name, "")
                 st.session_state.user = db_u
                 st.session_state.candidate_id = uid
-                st.query_params["uid"] = uid
                 st.success(f"Welcome, {c_name}!")
                 st.rerun()
 
@@ -908,16 +931,17 @@ with st.sidebar:
     st.caption(f"📧 `{current_user.get('email', '')}`")
 
     if st.button("🚪 Log Out", use_container_width=True):
+        if hasattr(st, "logout") and getattr(getattr(st, "user", None), "is_logged_in", False):
+            try:
+                st.logout()
+            except Exception:
+                pass
         st.session_state.user = None
         st.session_state.candidate_id = None
         st.session_state.messages = []
         st.session_state.interview_started = False
         st.session_state.interview_completed = False
         st.session_state.resume_analysis = None
-        try:
-            del st.query_params["uid"]
-        except Exception:
-            pass
         st.rerun()
 
     st.markdown("---")

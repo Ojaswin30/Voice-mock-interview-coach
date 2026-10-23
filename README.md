@@ -89,19 +89,21 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-#### Configure Secrets locally
-Create a `.streamlit/secrets.toml` file (or set in environment variables):
+#### Configure Secrets locally & on Streamlit Cloud
+Create a `.streamlit/secrets.toml` file (or set in Streamlit Cloud App Settings → Secrets):
 ```toml
 # .streamlit/secrets.toml
 
 # Groq API Key (Required)
 GROQ_API_KEY = "gsk_your_groq_api_key_here"
 
-# Google OAuth2 Sign-In (Optional but recommended for 1-click Google Sign-In)
-# Obtain these from Google Cloud Console -> APIs & Services -> Credentials -> OAuth 2.0 Client IDs
-GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET = "GOCSPX-your-client-secret"
-GOOGLE_REDIRECT_URI = "http://localhost:8501/"  # In production: "https://your-app.streamlit.app/"
+# Google OpenID Connect (OIDC) Authentication with Streamlit native st.login
+[auth]
+redirect_uri = "https://voice-mock-interview-coach.streamlit.app/oauth2callback" # Local: "http://localhost:8501/oauth2callback"
+cookie_secret = "a_random_32_character_string_for_cookie_encryption"
+client_id = "374708726653-rl5217itnoic8sdm0ql2952ggqpn7qtv.apps.googleusercontent.com"
+client_secret = "GOCSPX-your-client-secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
 ```
 Or export via terminal:
 ```powershell
@@ -115,11 +117,12 @@ streamlit run app.py
 
 ---
 
-## 🔐 Authentication & Session Persistence (No Data Loss on Ctrl+R)
+## 🔐 Authentication & Security
 
-- **Google Sign-In**: Authenticate securely using your Google account with OAuth2.
-- **Account Resume**: You can also sign in or create an account with your email address.
-- **No Data Loss on Refresh (`Ctrl + R`)**: User sessions and candidate IDs are automatically persisted in SQLite and synchronized with the browser URL (`?uid=...`). Refreshing the browser or returning to the tab retains your logged-in state, resume analysis, and persistent Knowledge Graph memory.
+- **Strict Identity & Authorization**: Candidate identity and interview data are **never** stored in public URL query parameters (`?cid=` and `?uid=` are completely removed and ignored).
+- **No URL-based session hijacking**: Pasting the app link into another browser, a phone, or an incognito window will **always** prompt the user to sign in. Nobody can access your interview history just by possessing a URL.
+- **Google Sign-In**: Native OpenID Connect authentication powered by Streamlit (`st.login()` / `st.user`), securing browser sessions via encrypted, HTTP-only cookies.
+- **Account Resume**: You can also sign in or create an account with your email address. All claims, weakness tracking, and scorecards are securely keyed to your account in SQLite.
 - **Memory Backup & Restore**: Download and upload full JSON backups of your Knowledge Graph directly from the sidebar.
 
 ---
