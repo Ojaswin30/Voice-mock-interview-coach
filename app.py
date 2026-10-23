@@ -53,6 +53,7 @@ def init_session_state():
             "filler_density_pct": 0.0,
             "breakdown": {},
         },
+        "active_dialog": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -269,6 +270,7 @@ with st.sidebar:
                 pass
         st.session_state.user = None
         st.session_state.candidate_id = None
+        st.session_state.active_dialog = None
         st.session_state.messages = []
         st.session_state.interview_started = False
         st.session_state.interview_completed = False

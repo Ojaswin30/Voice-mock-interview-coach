@@ -309,7 +309,19 @@ def get_background_base64() -> str:
 # -----------------------------------------------------------------------------
 # Authentication Dialogs: Sign-In, GitHub Setup, and Encrypted Registration
 # -----------------------------------------------------------------------------
-@st.dialog("🔑 Sign In to Existing Account")
+def _on_dialog_dismiss():
+    st.session_state.active_dialog = None
+
+dialog_kwargs = {}
+try:
+    import inspect
+    if "on_dismiss" in inspect.signature(st.dialog).parameters:
+        dialog_kwargs["on_dismiss"] = _on_dialog_dismiss
+except Exception:
+    pass
+
+
+@st.dialog("🔑 Sign In to Existing Account", **dialog_kwargs)
 def signin_dialog(user_manager: Any):
     step = st.session_state.get("signin_step", 1)
 
@@ -333,31 +345,40 @@ def signin_dialog(user_manager: Any):
         )
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-        if st.button("Send Verification Code →", type="primary", use_container_width=True):
-            email_clean = (email or "").strip().lower()
-            if not email_clean or not password:
-                st.error("Please provide both email address and password.")
-                return
+        col_send, col_cancel = st.columns([2, 1])
+        with col_send:
+            if st.button("Send Verification Code →", type="primary", use_container_width=True):
+                email_clean = (email or "").strip().lower()
+                if not email_clean or not password:
+                    st.error("Please provide both email address and password.")
+                    return
 
-            if not user_manager.user_exists(email_clean):
-                st.error("No account found with this email. Please click 'Sign Up as New Candidate'.")
-                return
+                if not user_manager.user_exists(email_clean):
+                    st.error("No account found with this email. Please click 'Sign Up as New Candidate'.")
+                    return
 
-            otp_code = generate_otp()
-            st.session_state.pending_signin = {
-                "email": email_clean,
-                "password": password,
-                "otp": otp_code,
-                "timestamp": time.time(),
-            }
+                otp_code = generate_otp()
+                st.session_state.pending_signin = {
+                    "email": email_clean,
+                    "password": password,
+                    "otp": otp_code,
+                    "timestamp": time.time(),
+                }
 
-            sent, msg = send_otp_email(
-                email_clean, otp_code, action="Sign-In Verification"
-            )
-            st.session_state.signin_step = 2
-            st.session_state.signin_otp_sent = sent
-            st.session_state.signin_otp_msg = msg
-            st.rerun()
+                sent, msg = send_otp_email(
+                    email_clean, otp_code, action="Sign-In Verification"
+                )
+                st.session_state.signin_step = 2
+                st.session_state.signin_otp_sent = sent
+                st.session_state.signin_otp_msg = msg
+                st.session_state.active_dialog = "signin"
+                st.rerun()
+
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.active_dialog = None
+                st.session_state.signin_step = 1
+                st.rerun()
 
     elif step == 2:
         pending = st.session_state.get("pending_signin", {})
@@ -386,46 +407,51 @@ def signin_dialog(user_manager: Any):
             key="dlg_signin_otp",
         )
 
-        col_verify, col_back = st.columns([1, 1])
-        with col_verify:
-            if st.button("Verify Identity & Sign In", type="primary", use_container_width=True):
-                if not otp_input or len(otp_input.strip()) != 6:
-                    st.error("Please enter the complete 6-digit verification code.")
-                    return
+        if st.button("Verify Identity & Sign In", type="primary", use_container_width=True):
+            if not otp_input or len(otp_input.strip()) != 6:
+                st.error("Please enter the complete 6-digit verification code.")
+                return
 
-                # 1. Verify OTP code
-                if otp_input.strip() != otp_expected:
-                    st.error("Invalid verification code. Please check and try again.")
-                    return
+            # 1. Verify OTP code
+            if otp_input.strip() != otp_expected:
+                st.error("Invalid verification code. Please check and try again.")
+                return
 
-                if time.time() - pending.get("timestamp", 0) > 600:
-                    st.error("Verification code has expired. Please request a new code.")
-                    st.session_state.signin_step = 1
-                    st.rerun()
-                    return
-
-                # 2. Check password in DB once OTP is verified
-                db_user, auth_msg = user_manager.authenticate_user(email_clean, pwd)
-                if not db_user:
-                    st.error(f"Password verification failed: {auth_msg}")
-                    return
-
-                # Authenticated successfully
-                st.session_state.user = db_user
-                st.session_state.candidate_id = db_user["id"]
+            if time.time() - pending.get("timestamp", 0) > 600:
+                st.error("Verification code has expired. Please request a new code.")
                 st.session_state.signin_step = 1
-                if "pending_signin" in st.session_state:
-                    del st.session_state.pending_signin
-                st.toast(f"Welcome back, {db_user.get('name', 'Candidate')}!")
                 st.rerun()
+                return
 
+            # 2. Check password in DB once OTP is verified
+            db_user, auth_msg = user_manager.authenticate_user(email_clean, pwd)
+            if not db_user:
+                st.error(f"Password verification failed: {auth_msg}")
+                return
+
+            # Authenticated successfully
+            st.session_state.active_dialog = None
+            st.session_state.user = db_user
+            st.session_state.candidate_id = db_user["id"]
+            st.session_state.signin_step = 1
+            if "pending_signin" in st.session_state:
+                del st.session_state.pending_signin
+            st.toast(f"Welcome back, {db_user.get('name', 'Candidate')}!")
+            st.rerun()
+
+        col_back, col_cancel = st.columns(2)
         with col_back:
             if st.button("← Back", use_container_width=True):
                 st.session_state.signin_step = 1
                 st.rerun()
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True, key="dlg_signin_step2_cancel"):
+                st.session_state.active_dialog = None
+                st.session_state.signin_step = 1
+                st.rerun()
 
 
-@st.dialog("🐙 GitHub Authentication Setup")
+@st.dialog("🐙 GitHub Authentication Setup", **dialog_kwargs)
 def github_setup_dialog():
     st.markdown(
         """
@@ -449,10 +475,11 @@ def github_setup_dialog():
         """
     )
     if st.button("Close", use_container_width=True):
+        st.session_state.active_dialog = None
         st.rerun()
 
 
-@st.dialog("✨ Sign Up as a New Candidate")
+@st.dialog("✨ Sign Up as a New Candidate", **dialog_kwargs)
 def signup_dialog(user_manager: Any):
     step = st.session_state.get("signup_step", 1)
 
@@ -504,44 +531,53 @@ def signup_dialog(user_manager: Any):
         exp_level = st.selectbox("Experience Level", exp_options, key="dlg_signup_exp")
 
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-        if st.button("Continue to OTP Verification →", type="primary", use_container_width=True):
-            email_clean = (email or "").strip().lower()
-            name_clean = (name or "").strip()
+        col_send, col_cancel = st.columns([2, 1])
+        with col_send:
+            if st.button("Continue to OTP Verification →", type="primary", use_container_width=True):
+                email_clean = (email or "").strip().lower()
+                name_clean = (name or "").strip()
 
-            if not name_clean:
-                st.error("Please enter your name.")
-                return
-            if not email_clean or "@" not in email_clean or "." not in email_clean:
-                st.error("Please enter a valid email address.")
-                return
-            if not pwd or len(pwd) < 6:
-                st.error("Password must be at least 6 characters long.")
-                return
-            if pwd != pwd_confirm:
-                st.error("Passwords do not match. Please re-enter.")
-                return
-            if user_manager.user_exists(email_clean):
-                st.error("An account with this email already exists. Please use 'Sign In to Existing Account'.")
-                return
+                if not name_clean:
+                    st.error("Please enter your name.")
+                    return
+                if not email_clean or "@" not in email_clean or "." not in email_clean:
+                    st.error("Please enter a valid email address.")
+                    return
+                if not pwd or len(pwd) < 6:
+                    st.error("Password must be at least 6 characters long.")
+                    return
+                if pwd != pwd_confirm:
+                    st.error("Passwords do not match. Please re-enter.")
+                    return
+                if user_manager.user_exists(email_clean):
+                    st.error("An account with this email already exists. Please use 'Sign In to Existing Account'.")
+                    return
 
-            otp_code = generate_otp()
-            st.session_state.pending_signup = {
-                "name": name_clean,
-                "email": email_clean,
-                "password": pwd,
-                "target_role": target_role,
-                "experience_level": exp_level,
-                "otp": otp_code,
-                "timestamp": time.time(),
-            }
+                otp_code = generate_otp()
+                st.session_state.pending_signup = {
+                    "name": name_clean,
+                    "email": email_clean,
+                    "password": pwd,
+                    "target_role": target_role,
+                    "experience_level": exp_level,
+                    "otp": otp_code,
+                    "timestamp": time.time(),
+                }
 
-            sent, msg = send_otp_email(
-                email_clean, otp_code, action="New Candidate Registration"
-            )
-            st.session_state.signup_step = 2
-            st.session_state.signup_otp_sent = sent
-            st.session_state.signup_otp_msg = msg
-            st.rerun()
+                sent, msg = send_otp_email(
+                    email_clean, otp_code, action="New Candidate Registration"
+                )
+                st.session_state.signup_step = 2
+                st.session_state.signup_otp_sent = sent
+                st.session_state.signup_otp_msg = msg
+                st.session_state.active_dialog = "signup"
+                st.rerun()
+
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.active_dialog = None
+                st.session_state.signup_step = 1
+                st.rerun()
 
     elif step == 2:
         pending = st.session_state.get("pending_signup", {})
@@ -569,43 +605,48 @@ def signup_dialog(user_manager: Any):
             key="dlg_signup_otp",
         )
 
-        col_reg, col_back = st.columns([1, 1])
-        with col_reg:
-            if st.button("Verify & Create Encrypted Profile", type="primary", use_container_width=True):
-                if not otp_input or len(otp_input.strip()) != 6:
-                    st.error("Please enter the complete 6-digit verification code.")
-                    return
+        if st.button("Verify & Create Encrypted Profile", type="primary", use_container_width=True):
+            if not otp_input or len(otp_input.strip()) != 6:
+                st.error("Please enter the complete 6-digit verification code.")
+                return
 
-                if otp_input.strip() != otp_expected:
-                    st.error("Invalid verification code. Please check and try again.")
-                    return
+            if otp_input.strip() != otp_expected:
+                st.error("Invalid verification code. Please check and try again.")
+                return
 
-                if time.time() - pending.get("timestamp", 0) > 600:
-                    st.error("Verification code expired. Please fill the registration form again.")
-                    st.session_state.signup_step = 1
-                    st.rerun()
-                    return
+            if time.time() - pending.get("timestamp", 0) > 600:
+                st.error("Verification code expired. Please fill the registration form again.")
+                st.session_state.signup_step = 1
+                st.rerun()
+                return
 
-                try:
-                    new_user = user_manager.register_user(
-                        name=pending.get("name", ""),
-                        email=email_clean,
-                        password=pending.get("password", ""),
-                        target_role=pending.get("target_role", ""),
-                        experience_level=pending.get("experience_level", ""),
-                    )
-                    st.session_state.user = new_user
-                    st.session_state.candidate_id = new_user["id"]
-                    st.session_state.signup_step = 1
-                    if "pending_signup" in st.session_state:
-                        del st.session_state.pending_signup
-                    st.toast(f"Account registered & encrypted! Welcome, {new_user.get('name', 'Candidate')}!")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Registration failed: {str(ex)}")
+            try:
+                new_user = user_manager.register_user(
+                    name=pending.get("name", ""),
+                    email=email_clean,
+                    password=pending.get("password", ""),
+                    target_role=pending.get("target_role", ""),
+                    experience_level=pending.get("experience_level", ""),
+                )
+                st.session_state.active_dialog = None
+                st.session_state.user = new_user
+                st.session_state.candidate_id = new_user["id"]
+                st.session_state.signup_step = 1
+                if "pending_signup" in st.session_state:
+                    del st.session_state.pending_signup
+                st.toast(f"Account registered & encrypted! Welcome, {new_user.get('name', 'Candidate')}!")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"Registration failed: {str(ex)}")
 
+        col_back, col_cancel = st.columns(2)
         with col_back:
             if st.button("← Back", use_container_width=True):
+                st.session_state.signup_step = 1
+                st.rerun()
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True, key="dlg_signup_step2_cancel"):
+                st.session_state.active_dialog = None
                 st.session_state.signup_step = 1
                 st.rerun()
 
@@ -861,7 +902,8 @@ def render_auth_portal(user_manager: Any):
         # -------------------------------------------------------------
         if st.button("🔑 Sign In to Existing Account", type="primary", use_container_width=True):
             st.session_state.signin_step = 1
-            signin_dialog(user_manager)
+            st.session_state.active_dialog = "signin"
+            st.rerun()
 
         st.markdown(
             "<div style='text-align: center; color: #64748b; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; margin: 0.65rem 0;'>— OR CONTINUE WITH —</div>",
@@ -880,7 +922,8 @@ def render_auth_portal(user_manager: Any):
             )
         else:
             if st.button("🐙 Sign in with GitHub", use_container_width=True):
-                github_setup_dialog()
+                st.session_state.active_dialog = "github_setup"
+                st.rerun()
 
         st.markdown(
             "<div style='text-align: center; color: #64748b; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; margin: 0.65rem 0;'>— NEW CANDIDATE? —</div>",
@@ -892,7 +935,8 @@ def render_auth_portal(user_manager: Any):
         # -------------------------------------------------------------
         if st.button("✨ Sign Up as New Candidate", use_container_width=True):
             st.session_state.signup_step = 1
-            signup_dialog(user_manager)
+            st.session_state.active_dialog = "signup"
+            st.rerun()
 
         st.markdown(
             """
@@ -902,3 +946,16 @@ def render_auth_portal(user_manager: Any):
             """,
             unsafe_allow_html=True,
         )
+
+    # -----------------------------------------------------------------
+    # Persistent Dialog Dispatcher
+    # Streamlit modal dialogs must be called during script execution to
+    # stay open across multi-step reruns (e.g. OTP verification).
+    # -----------------------------------------------------------------
+    active_dlg = st.session_state.get("active_dialog")
+    if active_dlg == "signin":
+        signin_dialog(user_manager)
+    elif active_dlg == "signup":
+        signup_dialog(user_manager)
+    elif active_dlg == "github_setup":
+        github_setup_dialog()
