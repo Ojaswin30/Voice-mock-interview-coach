@@ -7,123 +7,196 @@ import os
 import time
 import base64
 import hashlib
+import secrets
+import smtplib
+import contextlib
 import urllib.parse
-from typing import Optional, Dict, Any
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from typing import Optional, Dict, Any, Tuple
 import requests
 import streamlit as st
 
-from auth import (
-    UserManager,
-    generate_otp,
-    send_otp_email,
-)
 
-# Robust import with graceful fallback in case deployment has cached bytecode
-try:
-    from auth import (
-        get_google_oauth_config,
-        get_google_auth_url,
-        exchange_code_for_user,
-        verify_google_id_token,
-    )
-except ImportError:
-    pass
+# ---------------------------------------------------------------------------
+# Independent OTP Generation & Delivery (Zero external module dependencies)
+# ---------------------------------------------------------------------------
+def generate_otp() -> str:
+    """Generates a cryptographically secure 6-digit numeric verification code."""
+    return f"{secrets.randbelow(900000) + 100000}"
 
-try:
-    from auth import (
-        get_github_oauth_config,
-        get_github_auth_url,
-        exchange_github_code_for_user,
+
+def send_otp_email(
+    to_email: str, otp_code: str, action: str = "Identity Verification"
+) -> Tuple[bool, str]:
+    """
+    Sends a 6-digit OTP code to the recipient email via SMTP.
+    Returns (True, 'Success') if delivered, or (False, reason) if SMTP credentials are missing or fail.
+    """
+    smtp_email = ""
+    smtp_password = ""
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+
+    try:
+        if hasattr(st, "secrets"):
+            if "SMTP_EMAIL" in st.secrets:
+                smtp_email = str(st.secrets["SMTP_EMAIL"]).strip()
+            if "SMTP_PASSWORD" in st.secrets:
+                smtp_password = str(st.secrets["SMTP_PASSWORD"]).strip()
+            if "SMTP_SERVER" in st.secrets:
+                smtp_server = str(st.secrets["SMTP_SERVER"]).strip()
+            if "SMTP_PORT" in st.secrets:
+                smtp_port = int(st.secrets["SMTP_PORT"])
+    except Exception:
+        pass
+
+    if not smtp_email:
+        smtp_email = os.environ.get("SMTP_EMAIL", "").strip()
+    if not smtp_password:
+        smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
+    if os.environ.get("SMTP_SERVER"):
+        smtp_server = os.environ.get("SMTP_SERVER", "").strip()
+    if os.environ.get("SMTP_PORT"):
+        with contextlib.suppress(Exception):
+            smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+
+    if not smtp_email or not smtp_password:
+        return False, "SMTP credentials not configured"
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Your Verification Code: {otp_code} — Voice Mock-Interview Coach"
+        msg["From"] = f"Voice Mock-Interview Coach <{smtp_email}>"
+        msg["To"] = to_email
+
+        html_body = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h2 style="color: #0f172a; margin: 0;">🎙️ Voice Mock-Interview Coach</h2>
+                <p style="color: #64748b; font-size: 14px; margin-top: 6px;">Secure Candidate Authentication</p>
+            </div>
+            <p style="color: #334155; font-size: 15px; line-height: 1.5;">
+                Hello,<br><br>
+                Please use the following 6-digit verification code to complete your <strong>{action}</strong>:
+            </p>
+            <div style="margin: 26px 0; padding: 18px; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 10px; text-align: center;">
+                <span style="font-size: 34px; font-weight: 800; letter-spacing: 8px; color: #2563eb; font-family: monospace;">{otp_code}</span>
+            </div>
+            <p style="color: #64748b; font-size: 13px; line-height: 1.5;">
+                ⏳ This code will expire in <strong>10 minutes</strong>. If you did not make this request, please safely ignore this email.
+            </p>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+            <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">
+                Voice Mock-Interview Coach • AI-Powered Interview Preparation
+            </p>
+        </div>
+        """
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+            server.starttls()
+            server.login(smtp_email, smtp_password)
+            server.sendmail(smtp_email, [to_email], msg.as_string())
+
+        return True, "Code delivered successfully"
+    except Exception as e:
+        return False, str(e)
+
+
+# ---------------------------------------------------------------------------
+# Independent GitHub OAuth Functions
+# ---------------------------------------------------------------------------
+def get_github_oauth_config() -> Dict[str, str]:
+    """Retrieves GitHub OAuth client ID, client secret, and redirect URI."""
+    client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+    try:
+        if hasattr(st, "secrets"):
+            if "GITHUB_CLIENT_ID" in st.secrets:
+                client_id = str(st.secrets["GITHUB_CLIENT_ID"]).strip()
+            if "GITHUB_CLIENT_SECRET" in st.secrets:
+                client_secret = str(st.secrets["GITHUB_CLIENT_SECRET"]).strip()
+            if "github" in st.secrets:
+                if "client_id" in st.secrets["github"]:
+                    client_id = str(st.secrets["github"]["client_id"]).strip()
+                if "client_secret" in st.secrets["github"]:
+                    client_secret = str(st.secrets["github"]["client_secret"]).strip()
+    except Exception:
+        pass
+    redirect_uri = (
+        os.environ.get("GITHUB_REDIRECT_URI", "").strip()
+        or "https://voice-mock-interview-coach.streamlit.app/"
     )
-except ImportError:
-    def get_github_oauth_config() -> Dict[str, str]:
-        """Fallback GitHub OAuth config resolution if auth.py is cached on deployment."""
-        client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
-        try:
-            if hasattr(st, "secrets"):
-                if "GITHUB_CLIENT_ID" in st.secrets:
-                    client_id = str(st.secrets["GITHUB_CLIENT_ID"]).strip()
-                if "GITHUB_CLIENT_SECRET" in st.secrets:
-                    client_secret = str(st.secrets["GITHUB_CLIENT_SECRET"]).strip()
-                if "github" in st.secrets:
-                    if "client_id" in st.secrets["github"]:
-                        client_id = str(st.secrets["github"]["client_id"]).strip()
-                    if "client_secret" in st.secrets["github"]:
-                        client_secret = str(st.secrets["github"]["client_secret"]).strip()
-        except Exception:
-            pass
-        redirect_uri = (
-            os.environ.get("GITHUB_REDIRECT_URI", "").strip()
-            or "https://voice-mock-interview-coach.streamlit.app/"
+    return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
+
+
+def get_github_auth_url(config: Dict[str, str]) -> str:
+    """Generates the GitHub OAuth authorization URL."""
+    params = {
+        "client_id": config.get("client_id", ""),
+        "redirect_uri": config.get("redirect_uri", ""),
+        "scope": "read:user user:email",
+        "allow_signup": "true",
+    }
+    return f"https://github.com/login/oauth/authorize?{urllib.parse.urlencode(params)}"
+
+
+def exchange_github_code_for_user(
+    code: str, config: Dict[str, str]
+) -> Optional[Dict[str, Any]]:
+    """Exchanges GitHub OAuth authorization code for an access token and user profile."""
+    try:
+        token_resp = requests.post(
+            "https://github.com/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "code": code,
+                "redirect_uri": config["redirect_uri"],
+            },
+            timeout=10,
         )
-        return {"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}
-
-    def get_github_auth_url(config: Dict[str, str]) -> str:
-        """Fallback GitHub OAuth URL generator."""
-        params = {
-            "client_id": config.get("client_id", ""),
-            "redirect_uri": config.get("redirect_uri", ""),
-            "scope": "read:user user:email",
-            "allow_signup": "true",
-        }
-        return f"https://github.com/login/oauth/authorize?{urllib.parse.urlencode(params)}"
-
-    def exchange_github_code_for_user(
-        code: str, config: Dict[str, str]
-    ) -> Optional[Dict[str, Any]]:
-        """Fallback GitHub OAuth token exchanger."""
-        try:
-            token_resp = requests.post(
-                "https://github.com/login/oauth/access_token",
-                headers={"Accept": "application/json"},
-                data={
-                    "client_id": config["client_id"],
-                    "client_secret": config["client_secret"],
-                    "code": code,
-                    "redirect_uri": config["redirect_uri"],
-                },
-                timeout=10,
-            )
-            if not token_resp.ok:
-                return None
-            tokens = token_resp.json()
-            access_token = tokens.get("access_token")
-            if not access_token:
-                return None
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/vnd.github+json",
-            }
-            user_resp = requests.get(
-                "https://api.github.com/user", headers=headers, timeout=10
-            )
-            if not user_resp.ok:
-                return None
-            u = user_resp.json()
-            email = u.get("email")
-            if not email:
-                emails_resp = requests.get(
-                    "https://api.github.com/user/emails", headers=headers, timeout=10
-                )
-                if emails_resp.ok:
-                    for em in emails_resp.json():
-                        if em.get("primary") and em.get("verified"):
-                            email = em.get("email")
-                            break
-                        if not email:
-                            email = em.get("email")
-            return {
-                "sub": str(u.get("id")),
-                "name": u.get("name") or u.get("login") or "GitHub User",
-                "email": email or f"github_{u.get('id')}@users.noreply.github.com",
-                "picture": u.get("avatar_url", ""),
-            }
-        except Exception:
+        if not token_resp.ok:
             return None
+        tokens = token_resp.json()
+        access_token = tokens.get("access_token")
+        if not access_token:
+            return None
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/vnd.github+json",
+        }
+        user_resp = requests.get(
+            "https://api.github.com/user", headers=headers, timeout=10
+        )
+        if not user_resp.ok:
+            return None
+        u = user_resp.json()
+        email = u.get("email")
+        if not email:
+            emails_resp = requests.get(
+                "https://api.github.com/user/emails", headers=headers, timeout=10
+            )
+            if emails_resp.ok:
+                for em in emails_resp.json():
+                    if em.get("primary") and em.get("verified"):
+                        email = em.get("email")
+                        break
+                    if not email:
+                        email = em.get("email")
+        return {
+            "sub": str(u.get("id")),
+            "name": u.get("name") or u.get("login") or "GitHub User",
+            "email": email or f"github_{u.get('id')}@users.noreply.github.com",
+            "picture": u.get("avatar_url", ""),
+        }
+    except Exception:
+        return None
 
 
-def handle_oauth_callbacks(user_manager: UserManager):
+def handle_oauth_callbacks(user_manager: Any):
     """
     Handles URL query parameters for OAuth authentication (Streamlit Native, GitHub, Google)
     and removes query parameters to prevent URL session leakage.
@@ -212,7 +285,7 @@ def get_background_base64() -> str:
 # Authentication Dialogs: Sign-In, GitHub Setup, and Encrypted Registration
 # -----------------------------------------------------------------------------
 @st.dialog("🔑 Sign In to Existing Account")
-def signin_dialog(user_manager: UserManager):
+def signin_dialog(user_manager: Any):
     step = st.session_state.get("signin_step", 1)
 
     if step == 1:
@@ -355,7 +428,7 @@ def github_setup_dialog():
 
 
 @st.dialog("✨ Sign Up as a New Candidate")
-def signup_dialog(user_manager: UserManager):
+def signup_dialog(user_manager: Any):
     step = st.session_state.get("signup_step", 1)
 
     if step == 1:
@@ -512,7 +585,7 @@ def signup_dialog(user_manager: UserManager):
                 st.rerun()
 
 
-def render_auth_portal(user_manager: UserManager):
+def render_auth_portal(user_manager: Any):
     """
     Renders the Candidate Sign-In & Onboarding Portal with full-height centering,
     background image, and authentication options (Existing Account, GitHub, New Candidate).
