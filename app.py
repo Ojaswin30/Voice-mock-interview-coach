@@ -825,23 +825,272 @@ if auth_code and oauth_cfg.get("client_id") and oauth_cfg.get("client_secret") a
                 picture_url=google_user.get("picture", ""),
             )
             st.session_state.user = db_user
-            st.session_state.candidate_id = user_id
+            st.session_state.candidate_id = db_user["id"]
             try:
                 del st.query_params["code"]
             except Exception:
                 pass
             st.rerun()
 
-# 4. If not signed in, show Sign-In portal (NEVER auto-log in via unauthenticated URL parameters)
+def get_background_base64() -> str:
+    """Loads and enhances background_image.jpeg if needed, returning base64 string."""
+    enhanced_path = "background_enhanced.jpg"
+    orig_path = "background_image.jpeg"
+
+    if not os.path.exists(enhanced_path) and os.path.exists(orig_path):
+        try:
+            from PIL import Image, ImageEnhance, ImageFilter
+            with Image.open(orig_path) as img:
+                target_w = 1920
+                target_h = int(img.height * (1920 / img.width))
+                upscaled = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                sharpened = ImageEnhance.Sharpness(upscaled).enhance(1.8)
+                contrasted = ImageEnhance.Contrast(sharpened).enhance(1.15)
+                colored = ImageEnhance.Color(contrasted).enhance(1.1)
+                final_img = colored.filter(ImageFilter.UnsharpMask(radius=1.8, percent=140, threshold=2))
+                final_img.save(enhanced_path, "JPEG", quality=95, optimize=True)
+        except Exception:
+            pass
+
+    target_file = enhanced_path if os.path.exists(enhanced_path) else (orig_path if os.path.exists(orig_path) else "")
+    if target_file:
+        try:
+            with open(target_file, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            pass
+    return ""
+
+
+# 4. If not signed in, show Sign-In portal (Full-Height Equalized & Vertically Centered, No Scroll)
 if not st.session_state.get("user"):
-    st.title("🎙️ Voice Mock-Interview Coach")
-    st.markdown("Sign in to sync your **Knowledge Graph memory**, **resume claims**, and **interview performance** permanently to your account.")
+    bg_b64 = get_background_base64()
+    bg_css = f"""
+    .stApp {{
+        background: linear-gradient(rgba(10, 15, 29, 0.85), rgba(10, 15, 29, 0.92)), url("data:image/jpeg;base64,{bg_b64}") !important;
+        background-size: cover !important;
+        background-position: center center !important;
+        background-attachment: fixed !important;
+        background-repeat: no-repeat !important;
+    }}
+    """ if bg_b64 else ""
 
-    col_login, _ = st.columns([4, 3])
-    with col_login:
-        st.markdown("### 🔐 Sign In")
+    st.markdown(
+        f"""
+        <style>
+        {bg_css}
+        /* Hide Streamlit header, sidebar & footer on login to eliminate dead space */
+        header[data-testid="stHeader"], [data-testid="stSidebar"], footer {{
+            display: none !important;
+        }}
+        html, body, .stApp, [data-testid="stAppViewContainer"] {{
+            height: 100vh !important;
+            max-height: 100vh !important;
+            overflow: hidden !important;
+        }}
+        .main {{
+            height: 100vh !important;
+            max-height: 100vh !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }}
+        .main .block-container {{
+            max-width: 1220px !important;
+            width: 92% !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            margin: auto !important;
+        }}
+        /* Stretch both columns to match full length */
+        [data-testid="stHorizontalBlock"] {{
+            align-items: stretch !important;
+        }}
+        [data-testid="column"] {{
+            display: flex !important;
+            flex-direction: column !important;
+        }}
+        .hero-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 13px;
+            background: rgba(59, 130, 246, 0.14);
+            border: 1px solid rgba(59, 130, 246, 0.35);
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #60a5fa;
+            margin-bottom: 0.75rem;
+        }}
+        .hero-title {{
+            font-size: 2.25rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 0.6rem;
+            color: #f8fafc;
+        }}
+        .hero-summary {{
+            font-size: 0.98rem;
+            color: #cbd5e1;
+            line-height: 1.5;
+            margin-bottom: 1.25rem;
+        }}
+        .agenda-grid {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.65rem;
+        }}
+        .agenda-item {{
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            background: rgba(15, 23, 42, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 10px 15px;
+            backdrop-filter: blur(8px);
+            transition: all 0.2s ease;
+        }}
+        .agenda-item:hover {{
+            background: rgba(15, 23, 42, 0.85);
+            border-color: rgba(59, 130, 246, 0.4);
+            transform: translateX(4px);
+        }}
+        .agenda-icon {{
+            font-size: 1.25rem;
+            line-height: 1.2;
+            padding-top: 1px;
+        }}
+        .agenda-title {{
+            font-size: 0.91rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin-bottom: 2px;
+        }}
+        .agenda-desc {{
+            font-size: 0.81rem;
+            color: #94a3b8;
+            line-height: 1.4;
+        }}
+        .signin-card {{
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 20px;
+            padding: 2.5rem 2.25rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(16px);
+            text-align: center;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
+            height: 100% !important;
+            box-sizing: border-box !important;
+        }}
+        .signin-title {{
+            font-size: 1.65rem;
+            font-weight: 800;
+            margin-bottom: 0.6rem;
+            color: #f8fafc;
+        }}
+        .signin-desc {{
+            font-size: 0.92rem;
+            color: #94a3b8;
+            line-height: 1.55;
+            margin-bottom: 2rem;
+            max-width: 320px;
+        }}
+        .google-login-btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            width: 100%;
+            max-width: 320px;
+            background-color: #ffffff;
+            color: #1f2937 !important;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            padding: 13px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            text-decoration: none !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            transition: all 0.2s ease;
+            box-sizing: border-box;
+        }}
+        .google-login-btn:hover {{
+            background-color: #f8fafc;
+            border-color: #9ca3af;
+            color: #111827 !important;
+            text-decoration: none !important;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+        }}
+        .login-footer {{
+            margin-top: 1.75rem;
+            font-size: 0.78rem;
+            color: #64748b;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        # Native Streamlit OIDC Login if configured in secrets [auth]
+    col_agenda, col_auth = st.columns([6, 4], gap="large")
+
+    with col_agenda:
+        st.markdown(
+            """
+            <div class="hero-badge">🎙️ AI-Powered Interview Preparation</div>
+            <div class="hero-title">Voice Mock-Interview Coach</div>
+            <div class="hero-summary">
+                Practice realistic, high-stakes technical interviews with an AI that speaks, listens, and probes technical claims in real time.<br>
+                Backed by a persistent Knowledge Graph that tracks your demonstrated depth, covered topics, and weak areas across sessions.
+            </div>
+            <div class="agenda-grid">
+                <div class="agenda-item">
+                    <div class="agenda-icon">🗣️</div>
+                    <div>
+                        <div class="agenda-title">1. Real-Time Voice Conversation</div>
+                        <div class="agenda-desc">Speak answers naturally using faster-whisper speech recognition and listen to immediate interviewer audio via browser speech synthesis.</div>
+                    </div>
+                </div>
+                <div class="agenda-item">
+                    <div class="agenda-icon">📄</div>
+                    <div>
+                        <div class="agenda-title">2. Resume & Job Description Grounding</div>
+                        <div class="agenda-desc">Extracts background claims and target role requirements to challenge specific project tradeoffs and architectural decisions.</div>
+                    </div>
+                </div>
+                <div class="agenda-item">
+                    <div class="agenda-icon">🧠</div>
+                    <div>
+                        <div class="agenda-title">3. Persistent Knowledge Graph Memory</div>
+                        <div class="agenda-desc">Unprobed claims, weak explanations, and strengths evolve turn-by-turn and persist permanently to your account across sessions.</div>
+                    </div>
+                </div>
+                <div class="agenda-item">
+                    <div class="agenda-icon">📊</div>
+                    <div>
+                        <div class="agenda-title">4. Lead Hiring Committee Evaluation</div>
+                        <div class="agenda-desc">Receive comprehensive dimension ratings, filler word delivery analytics, and STAR framework model answers upon completion.</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_auth:
         has_native_auth = False
         try:
             if "auth" in st.secrets and hasattr(st, "login"):
@@ -852,45 +1101,48 @@ if not st.session_state.get("user"):
         has_google_secret = bool(oauth_cfg.get("client_secret"))
         has_google_client = bool(oauth_cfg.get("client_id"))
 
-        # 1. Google Identity Services (GIS) Button from Campus Voting Platform
-        if has_google_client:
-            components.html(render_gis_signin_html(oauth_cfg["client_id"]), height=60)
-
-        # 2. Native Streamlit OIDC or Direct OAuth fallback
         if has_native_auth:
-            if st.button("Sign in with Google (OIDC)", type="primary", use_container_width=True):
+            st.markdown(
+                """
+                <div class="signin-card">
+                    <div class="signin-title">Candidate Portal</div>
+                    <div class="signin-desc">Sign in with your Google account to access your personalized interview session and persistent memory graph.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Sign in with Google", type="primary", use_container_width=True):
                 st.login()
         elif has_google_client and has_google_secret:
             google_auth_url = get_google_auth_url(oauth_cfg)
             st.markdown(
                 f"""
-                <a href="{google_auth_url}" target="_self" style="
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 12px;
-                    width: 100%;
-                    background-color: #ffffff;
-                    color: #1f2937;
-                    border: 1px solid #d1d5db;
-                    border-radius: 8px;
-                    padding: 10px 18px;
-                    font-size: 14px;
-                    font-weight: 500;
-                    text-decoration: none;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                    margin-top: 10px;
-                ">
-                    <svg width="18" height="18" viewBox="0 0 48 48">
-                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                    </svg>
-                    Direct Google OAuth Sign-In
-                </a>
+                <div class="signin-card">
+                    <div class="signin-title">Candidate Portal</div>
+                    <div class="signin-desc">Sign in with your Google account to access your personalized interview session and persistent memory graph.</div>
+                    <a href="{google_auth_url}" target="_top" class="google-login-btn">
+                        <svg width="20" height="20" viewBox="0 0 48 48">
+                            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                        </svg>
+                        Sign in with Google
+                    </a>
+                    <div class="login-footer">🔒 Secure & encrypted session • Synced to your profile</div>
+                </div>
                 """,
                 unsafe_allow_html=True,
+            )
+        elif has_google_client and not has_google_secret:
+            st.info(
+                f"🔑 **Google Client ID loaded:** `{oauth_cfg.get('client_id')[:24]}...`\n\n"
+                "To activate Google Sign-In, please provide your **`GOOGLE_CLIENT_SECRET`** (starts with `GOCSPX-`).\n\n"
+                "Add it in `.env` or Streamlit Cloud Settings → Secrets."
+            )
+        else:
+            st.info(
+                "💡 **Google Sign-In Required**: To enable Google authentication, configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env` or Streamlit Cloud Secrets."
             )
 
     st.stop()

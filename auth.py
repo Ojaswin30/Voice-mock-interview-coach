@@ -86,7 +86,7 @@ def get_google_oauth_config() -> Dict[str, str]:
 def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
     """
     Cryptographically verifies Google ID Token with Google's OAuth2 tokeninfo endpoint,
-    with robust JWT base64 parsing fallback (from Distributed-Campus-Voting-Platform).
+    with robust JWT base64 parsing fallback.
     """
     if not id_token or not id_token.strip():
         return None
@@ -184,7 +184,6 @@ def exchange_code_for_user(code: str, config: Dict[str, str]) -> Optional[Dict[s
 
 def render_gis_signin_html(client_id: str) -> str:
     """
-    Renders Google Identity Services (GIS) button matching the Distributed Campus Voting Platform.
     When authenticated, navigates the parent window with ?google_token=<credential>.
     """
     return f"""<!DOCTYPE html>
@@ -304,8 +303,34 @@ class UserManager:
     def upsert_user(
         self, user_id: str, email: str, name: str, picture_url: str = ""
     ) -> Dict[str, Any]:
+        email_clean = (email or "").strip().lower()
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # 1. If user with this email already exists, update their profile without violating UNIQUE constraint
+            if email_clean:
+                cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
+                existing = cursor.fetchone()
+                if existing:
+                    existing_id = existing["id"]
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET name = COALESCE(NULLIF(?, ''), name),
+                            picture_url = COALESCE(NULLIF(?, ''), picture_url),
+                            last_login = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (name, picture_url, existing_id),
+                    )
+                    conn.commit()
+                    return self.get_user_by_id(existing_id) or {
+                        "id": existing_id,
+                        "email": email_clean,
+                        "name": name,
+                        "picture_url": picture_url,
+                    }
+
+            # 2. Otherwise insert or update by user_id
             cursor.execute(
                 """
                 INSERT INTO users (id, email, name, picture_url, last_login)
@@ -316,12 +341,13 @@ class UserManager:
                     picture_url = excluded.picture_url,
                     last_login = CURRENT_TIMESTAMP
                 """,
-                (user_id, email, name, picture_url),
+                (user_id, email_clean, name, picture_url),
             )
             conn.commit()
+
         return self.get_user_by_id(user_id) or {
             "id": user_id,
-            "email": email,
+            "email": email_clean,
             "name": name,
             "picture_url": picture_url,
         }
