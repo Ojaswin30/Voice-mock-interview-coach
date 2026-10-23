@@ -1,0 +1,29 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment variables
+.env
+
+# Faster-whisper model cache if local
+whisper_models/
+*.wav
+*.mp3
+*.ogg
+
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3
