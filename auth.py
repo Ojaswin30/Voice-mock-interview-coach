@@ -35,32 +35,51 @@ def get_google_client_id() -> str:
     return ""
 
 
-def get_google_oauth_config() -> Dict[str, str]:
-    """Retrieves Google OAuth client ID, client secret, and redirect URI from environment variables."""
-    client_id = get_google_client_id()
-
-    # Prioritize environment variables (.env)
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
-    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
-
-    # Fallback to Streamlit Secrets (for Streamlit Cloud deployment)
+def resolve_redirect_uri() -> str:
+    """
+    Dynamically resolves the exact authorized redirect URI matching Google Cloud Console:
+    - On Streamlit Cloud: https://voice-mock-interview-coach.streamlit.app/
+    - On local machine: http://localhost:8501/
+    """
     try:
-        if hasattr(st, "secrets"):
-            if not client_secret:
-                if "GOOGLE_CLIENT_SECRET" in st.secrets:
-                    client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
-                elif "auth" in st.secrets and "client_secret" in st.secrets["auth"]:
-                    client_secret = str(st.secrets["auth"]["client_secret"]).strip()
-            if not redirect_uri:
-                if "GOOGLE_REDIRECT_URI" in st.secrets:
-                    redirect_uri = str(st.secrets["GOOGLE_REDIRECT_URI"]).strip()
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            host = st.context.headers.get("host", "")
+            if "streamlit.app" in host:
+                return "https://voice-mock-interview-coach.streamlit.app/"
+            if "localhost" in host or "127.0.0.1" in host:
+                return "http://localhost:8501/"
     except Exception:
         pass
+
+    custom_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+    if custom_uri:
+        if not custom_uri.endswith("/"):
+            custom_uri += "/"
+        return custom_uri
+
+    return "https://voice-mock-interview-coach.streamlit.app/"
+
+
+def get_google_oauth_config() -> Dict[str, str]:
+    """Retrieves Google OAuth client ID, client secret, and redirect URI."""
+    client_id = get_google_client_id()
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+
+    try:
+        if hasattr(st, "secrets") and not client_secret:
+            if "GOOGLE_CLIENT_SECRET" in st.secrets:
+                client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
+            elif "auth" in st.secrets and "client_secret" in st.secrets["auth"]:
+                client_secret = str(st.secrets["auth"]["client_secret"]).strip()
+    except Exception:
+        pass
+
+    redirect_uri = resolve_redirect_uri()
 
     return {
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": redirect_uri or "https://voice-mock-interview-coach.streamlit.app/",
+        "redirect_uri": redirect_uri,
     }
 
 
@@ -115,13 +134,14 @@ def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
 
 
 def get_google_auth_url(config: Dict[str, str]) -> str:
-    """Generates the Google OAuth2 authorization URL."""
+    """Generates the Google OAuth2 authorization URL compliant with Google validation rules."""
     params = {
         "client_id": config["client_id"],
         "redirect_uri": config["redirect_uri"],
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "online",
+        "include_granted_scopes": "true",
         "prompt": "select_account",
     }
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
