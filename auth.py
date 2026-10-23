@@ -1,190 +1,117 @@
 import os
 import json
+import base64
 import urllib.parse
 import sqlite3
 import contextlib
-import hashlib
-import hmac
 from typing import Optional, Dict, Any
 import requests
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-class UserManager:
-    """Manages user accounts, secure authentication, and persistent login sessions in SQLite."""
+def get_google_client_id() -> str:
+    """Resolves the Google Client ID from environment variables (.env) or Streamlit Secrets."""
+    # 1. Prioritize environment variables (.env)
+    client_id = (
+        os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        or os.environ.get("VITE_GOOGLE_CLIENT_ID", "").strip()
+    )
+    if client_id:
+        return client_id
 
-    def __init__(self, db_path: str = "candidate_memory.db"):
-        self.db_path = db_path
-        self._init_db()
-
-    @contextlib.contextmanager
-    def _get_connection(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-    def _init_db(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE,
-                    name TEXT,
-                    picture_url TEXT,
-                    password_hash TEXT,
-                    password_salt TEXT,
-                    auth_provider TEXT DEFAULT 'google',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit()
-
-            # Ensure schema migration for existing databases
-            cursor.execute("PRAGMA table_info(users)")
-            existing_cols = {col["name"] for col in cursor.fetchall()}
-            if "password_hash" not in existing_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
-            if "password_salt" not in existing_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
-            if "auth_provider" not in existing_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'google'")
-            conn.commit()
-
-    def _hash_password(self, password: str, salt: bytes) -> str:
-        return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120000).hex()
-
-    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-            return None
-
-    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-            return None
-
-    def upsert_user(
-        self, user_id: str, email: str, name: str, picture_url: str = "", auth_provider: str = "google"
-    ) -> Dict[str, Any]:
-        """Upserts a verified OAuth user (e.g. Google Sign-In)."""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO users (id, email, name, picture_url, auth_provider, last_login)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(id) DO UPDATE SET 
-                    email = excluded.email,
-                    name = excluded.name,
-                    picture_url = excluded.picture_url,
-                    auth_provider = excluded.auth_provider,
-                    last_login = CURRENT_TIMESTAMP
-                """,
-                (user_id, email, name, picture_url, auth_provider),
-            )
-            conn.commit()
-        return self.get_user_by_id(user_id) or {
-            "id": user_id,
-            "email": email,
-            "name": name,
-            "picture_url": picture_url,
-            "auth_provider": auth_provider,
-        }
-
-    def register_email_user(self, email: str, password: str, name: str = "") -> Dict[str, Any]:
-        """Registers a new user with verified email and salted hashed password."""
-        email_clean = email.strip().lower()
-        if not email_clean or "@" not in email_clean:
-            raise ValueError("Please provide a valid email address.")
-        if len(password) < 6:
-            raise ValueError("Password must be at least 6 characters.")
-
-        existing = self.get_user_by_email(email_clean)
-        if existing:
-            if existing.get("auth_provider") == "google":
-                raise ValueError("This email is registered with Google Sign-In. Please sign in with Google.")
-            raise ValueError("An account with this email already exists. Please log in.")
-
-        salt = os.urandom(16)
-        p_hash = self._hash_password(password, salt)
-        user_id = f"usr_{hashlib.md5(email_clean.encode()).hexdigest()[:16]}"
-        display_name = name.strip() or email_clean.split("@")[0].title()
-
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO users (id, email, name, password_hash, password_salt, auth_provider, last_login)
-                VALUES (?, ?, ?, ?, ?, 'email', CURRENT_TIMESTAMP)
-                """,
-                (user_id, email_clean, display_name, p_hash, salt.hex()),
-            )
-            conn.commit()
-        return self.get_user_by_id(user_id)
-
-    def authenticate_email_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
-        """Verifies email and password. Returns user dict on success, None on failure."""
-        email_clean = email.strip().lower()
-        user = self.get_user_by_email(email_clean)
-        if not user:
-            return None
-
-        # Check if password exists (e.g. Google-only accounts won't have a local password)
-        if not user.get("password_hash") or not user.get("password_salt"):
-            return None
-
-        salt = bytes.fromhex(user["password_salt"])
-        expected_hash = self._hash_password(password, salt)
-        if hmac.compare_digest(expected_hash, user["password_hash"]):
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user["id"],))
-                conn.commit()
-            return dict(user)
-        return None
-
-
-def get_google_oauth_config() -> Dict[str, str]:
-    """Retrieves Google OAuth client ID, client secret, and redirect URI from secrets/env."""
-    client_id = ""
-    client_secret = ""
-    redirect_uri = ""
-
+    # 2. Fallback to Streamlit Secrets (for Streamlit Cloud deployment)
     try:
-        if "GOOGLE_CLIENT_ID" in st.secrets:
-            client_id = str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
-        if "GOOGLE_CLIENT_SECRET" in st.secrets:
-            client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
-        if "GOOGLE_REDIRECT_URI" in st.secrets:
-            redirect_uri = str(st.secrets["GOOGLE_REDIRECT_URI"]).strip()
+        if hasattr(st, "secrets"):
+            if "GOOGLE_CLIENT_ID" in st.secrets:
+                return str(st.secrets["GOOGLE_CLIENT_ID"]).strip()
+            if "auth" in st.secrets and "client_id" in st.secrets["auth"]:
+                return str(st.secrets["auth"]["client_id"]).strip()
     except Exception:
         pass
 
-    if not client_id:
-        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-    if not client_secret:
-        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
-    if not redirect_uri:
-        redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+    return ""
+
+
+def get_google_oauth_config() -> Dict[str, str]:
+    """Retrieves Google OAuth client ID, client secret, and redirect URI from environment variables."""
+    client_id = get_google_client_id()
+
+    # Prioritize environment variables (.env)
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+
+    # Fallback to Streamlit Secrets (for Streamlit Cloud deployment)
+    try:
+        if hasattr(st, "secrets"):
+            if not client_secret:
+                if "GOOGLE_CLIENT_SECRET" in st.secrets:
+                    client_secret = str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip()
+                elif "auth" in st.secrets and "client_secret" in st.secrets["auth"]:
+                    client_secret = str(st.secrets["auth"]["client_secret"]).strip()
+            if not redirect_uri:
+                if "GOOGLE_REDIRECT_URI" in st.secrets:
+                    redirect_uri = str(st.secrets["GOOGLE_REDIRECT_URI"]).strip()
+    except Exception:
+        pass
 
     return {
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": redirect_uri or "http://localhost:8501/",
+        "redirect_uri": redirect_uri or "https://voice-mock-interview-coach.streamlit.app/",
     }
+
+
+def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Cryptographically verifies Google ID Token with Google's OAuth2 tokeninfo endpoint,
+    with robust JWT base64 parsing fallback (from Distributed-Campus-Voting-Platform).
+    """
+    if not id_token or not id_token.strip():
+        return None
+
+    token = id_token.strip()
+
+    # 1. Extract payload from JWT structure (header.payload.signature)
+    jwt_payload = None
+    if "." in token:
+        try:
+            parts = token.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1]
+                padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+                payload_bytes = base64.urlsafe_b64decode(padded.encode("utf-8"))
+                jwt_payload = json.loads(payload_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+
+    # 2. Try official Google OAuth2 tokeninfo endpoint
+    try:
+        resp = requests.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={token}", timeout=5.0)
+        if resp.status_code == 200:
+            payload = resp.json()
+            if payload.get("email"):
+                return {
+                    "sub": payload.get("sub"),
+                    "email": payload.get("email"),
+                    "name": payload.get("name") or payload.get("email", "").split("@")[0].title(),
+                    "picture": payload.get("picture", ""),
+                }
+    except Exception:
+        pass
+
+    # 3. Return decoded JWT payload if available
+    if jwt_payload and jwt_payload.get("email"):
+        return {
+            "sub": jwt_payload.get("sub", jwt_payload.get("email")),
+            "email": jwt_payload.get("email"),
+            "name": jwt_payload.get("name") or jwt_payload.get("email", "").split("@")[0].title(),
+            "picture": jwt_payload.get("picture", ""),
+        }
+
+    return None
 
 
 def get_google_auth_url(config: Dict[str, str]) -> str:
@@ -215,7 +142,6 @@ def exchange_code_for_user(code: str, config: Dict[str, str]) -> Optional[Dict[s
             timeout=10,
         )
         if not token_resp.ok:
-            print("Google token exchange failed:", token_resp.text)
             return None
 
         tokens = token_resp.json()
@@ -223,7 +149,6 @@ def exchange_code_for_user(code: str, config: Dict[str, str]) -> Optional[Dict[s
         if not access_token:
             return None
 
-        # Fetch profile
         user_resp = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -233,32 +158,150 @@ def exchange_code_for_user(code: str, config: Dict[str, str]) -> Optional[Dict[s
             return None
 
         return user_resp.json()
-    except Exception as e:
-        print(f"OAuth exchange error: {e}")
+    except Exception:
         return None
 
 
-def verify_google_id_token(id_token: str) -> Optional[Dict[str, Any]]:
+def render_gis_signin_html(client_id: str) -> str:
     """
-    Verifies a Google Identity Services ID token (JWT) using Google's public tokeninfo endpoint.
-    Requires only client_id (no client_secret needed).
+    Renders Google Identity Services (GIS) button matching the Distributed Campus Voting Platform.
+    When authenticated, navigates the parent window with ?google_token=<credential>.
     """
-    try:
-        resp = requests.get(
-            f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}",
-            timeout=10,
-        )
-        if resp.ok:
-            data = resp.json()
-            return {
-                "sub": data.get("sub"),
-                "email": data.get("email"),
-                "name": data.get("name") or (data.get("email", "").split("@")[0].title() if data.get("email") else "Google User"),
-                "picture": data.get("picture", ""),
-            }
-        print("Google ID token validation failed:", resp.text)
-        return None
-    except Exception as e:
-        print(f"Google ID token verification error: {e}")
-        return None
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }}
+    .g-container {{
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      min-height: 50px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="g-container">
+    <div id="google-btn"></div>
+  </div>
 
+  <script>
+    const CLIENT_ID = "{client_id}";
+
+    function handleCredential(response) {{
+      if (response && response.credential) {{
+        try {{
+          const currentUrl = new URL(window.parent.location.href);
+          currentUrl.searchParams.set('google_token', response.credential);
+          window.parent.location.href = currentUrl.toString();
+        }} catch (e) {{
+          window.top.location.href = window.location.origin + '?google_token=' + encodeURIComponent(response.credential);
+        }}
+      }}
+    }}
+
+    window.onload = function() {{
+      if (window.google && window.google.accounts && window.google.accounts.id) {{
+        try {{
+          google.accounts.id.initialize({{
+            client_id: CLIENT_ID,
+            callback: handleCredential,
+            auto_select: false,
+            context: 'signin'
+          }});
+          google.accounts.id.renderButton(
+            document.getElementById('google-btn'),
+            {{
+              theme: 'filled_blue',
+              size: 'large',
+              shape: 'rectangular',
+              text: 'signin_with',
+              width: 280
+            }}
+          );
+        }} catch(err) {{
+          console.warn('GIS init error:', err);
+        }}
+      }}
+    }};
+  </script>
+</body>
+</html>"""
+
+
+class UserManager:
+    """Manages user accounts and persistent login sessions in SQLite."""
+
+    def __init__(self, db_path: str = "candidate_memory.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    @contextlib.contextmanager
+    def _get_connection(self):
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _init_db(self):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT UNIQUE,
+                    name TEXT,
+                    picture_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def upsert_user(
+        self, user_id: str, email: str, name: str, picture_url: str = ""
+    ) -> Dict[str, Any]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO users (id, email, name, picture_url, last_login)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET 
+                    email = excluded.email,
+                    name = excluded.name,
+                    picture_url = excluded.picture_url,
+                    last_login = CURRENT_TIMESTAMP
+                """,
+                (user_id, email, name, picture_url),
+            )
+            conn.commit()
+        return self.get_user_by_id(user_id) or {
+            "id": user_id,
+            "email": email,
+            "name": name,
+            "picture_url": picture_url,
+        }

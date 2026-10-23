@@ -28,6 +28,7 @@ from auth import (
     get_google_auth_url,
     exchange_code_for_user,
     verify_google_id_token,
+    render_gis_signin_html,
 )
 
 load_dotenv()
@@ -851,8 +852,13 @@ if not st.session_state.get("user"):
         has_google_secret = bool(oauth_cfg.get("client_secret"))
         has_google_client = bool(oauth_cfg.get("client_id"))
 
+        # 1. Google Identity Services (GIS) Button from Campus Voting Platform
+        if has_google_client:
+            components.html(render_gis_signin_html(oauth_cfg["client_id"]), height=60)
+
+        # 2. Native Streamlit OIDC or Direct OAuth fallback
         if has_native_auth:
-            if st.button("Sign in with Google", type="primary", use_container_width=True):
+            if st.button("Sign in with Google (OIDC)", type="primary", use_container_width=True):
                 st.login()
         elif has_google_client and has_google_secret:
             google_auth_url = get_google_auth_url(oauth_cfg)
@@ -868,33 +874,23 @@ if not st.session_state.get("user"):
                     color: #1f2937;
                     border: 1px solid #d1d5db;
                     border-radius: 8px;
-                    padding: 12px 20px;
-                    font-size: 15px;
+                    padding: 10px 18px;
+                    font-size: 14px;
                     font-weight: 500;
                     text-decoration: none;
                     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                    margin-bottom: 16px;
+                    margin-top: 10px;
                 ">
-                    <svg width="20" height="20" viewBox="0 0 48 48">
+                    <svg width="18" height="18" viewBox="0 0 48 48">
                         <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
                         <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
                         <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
                         <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
                     </svg>
-                    Sign in with Google
+                    Direct Google OAuth Sign-In
                 </a>
                 """,
                 unsafe_allow_html=True,
-            )
-        elif has_google_client and not has_google_secret:
-            st.info(
-                f"🔑 **Google Client ID loaded:** `{oauth_cfg.get('client_id')[:24]}...`\n\n"
-                "To activate Google Sign-In, please provide your **`GOOGLE_CLIENT_SECRET`** (found in Google Cloud Console right next to your Client ID, starts with `GOCSPX-`).\n\n"
-                "Add it in `.streamlit/secrets.toml` or Streamlit Cloud Settings → Secrets."
-            )
-        else:
-            st.info(
-                "💡 **Google Sign-In Required**: To enable Google authentication, configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.streamlit/secrets.toml` or Streamlit Cloud Secrets."
             )
 
     st.stop()
@@ -907,7 +903,8 @@ with st.sidebar:
     st.title("🎙️ Interview Settings")
 
     current_user = st.session_state.user
-    candidate_id = current_user["id"]
+    current_user = current_user or {}
+    candidate_id = current_user.get("id", "guest")
     candidate_name = current_user.get("name", "Candidate")
 
     st.markdown(f"👤 **{candidate_name}**")
