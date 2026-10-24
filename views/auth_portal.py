@@ -546,7 +546,7 @@ def signup_dialog(user_manager: Any):
                     st.error("Passwords do not match. Please re-enter.")
                     return
                 if user_manager.user_exists(email_clean):
-                    st.error("An account with this email already exists. Please use 'Sign In to Existing Account'.")
+                    st.error(f"❌ **Email already exists:** An account with **{email_clean}** is already registered in the system. Please use 'Sign In to Existing Account'.")
                     return
 
                 otp_code = generate_otp()
@@ -614,6 +614,10 @@ def signup_dialog(user_manager: Any):
                 st.error("Verification code expired. Please fill the registration form again.")
                 st.session_state.signup_step = 1
                 st.rerun()
+                return
+
+            if user_manager.user_exists(email_clean):
+                st.error(f"❌ **Email already exists:** An account with **{email_clean}** is already registered in the system. Please use 'Sign In to Existing Account'.")
                 return
 
             try:
