@@ -554,6 +554,127 @@ class UserManager:
                 if col_name not in existing_cols:
                     cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
 
+            # Safe schema migration for existing databases:
+            # 1. Resolve duplicate candidate rows whose emails differ only by case
+            cursor.execute("""
+                SELECT LOWER(TRIM(email)) AS norm_email
+                FROM users
+                WHERE email IS NOT NULL AND TRIM(email) != ''
+                GROUP BY LOWER(TRIM(email))
+                HAVING COUNT(*) > 1
+            """)
+            dup_groups = [r["norm_email"] for r in cursor.fetchall()]
+            for norm_email in dup_groups:
+                cursor.execute("""
+                    SELECT * FROM users
+                    WHERE LOWER(TRIM(email)) = ?
+                    ORDER BY
+                        (password_hash IS NOT NULL AND password_hash != '') DESC,
+                        last_login DESC,
+                        created_at DESC,
+                        id ASC
+                """, (norm_email,))
+                rows = [dict(r) for r in cursor.fetchall()]
+                if not rows:
+                    continue
+
+                canonical = rows[0]
+                canonical_id = canonical["id"]
+
+                for dup in rows[1:]:
+                    dup_id = dup["id"]
+
+                    # Merge non-empty user fields into canonical if canonical is missing them
+                    merge_updates = []
+                    merge_params = []
+                    for field in [
+                        "name",
+                        "password_hash",
+                        "picture_url",
+                        "target_role",
+                        "experience_level",
+                        "encrypted_profile",
+                    ]:
+                        if not canonical.get(field) and dup.get(field):
+                            merge_updates.append(f"{field} = ?")
+                            merge_params.append(dup[field])
+                            canonical[field] = dup[field]
+
+                    if merge_updates:
+                        merge_params.append(canonical_id)
+                        cursor.execute(
+                            f"UPDATE users SET {', '.join(merge_updates)} WHERE id = ?",
+                            merge_params,
+                        )
+
+                    # Preserve earliest created_at and latest last_login
+                    if dup.get("created_at") and (
+                        not canonical.get("created_at")
+                        or dup["created_at"] < canonical["created_at"]
+                    ):
+                        cursor.execute(
+                            "UPDATE users SET created_at = ? WHERE id = ?",
+                            (dup["created_at"], canonical_id),
+                        )
+                        canonical["created_at"] = dup["created_at"]
+
+                    if dup.get("last_login") and (
+                        not canonical.get("last_login")
+                        or dup["last_login"] > canonical["last_login"]
+                    ):
+                        cursor.execute(
+                            "UPDATE users SET last_login = ? WHERE id = ?",
+                            (dup["last_login"], canonical_id),
+                        )
+                        canonical["last_login"] = dup["last_login"]
+
+                    # Re-point interview sessions to canonical user
+                    cursor.execute(
+                        "UPDATE interview_sessions SET candidate_id = ? WHERE candidate_id = ?",
+                        (canonical_id, dup_id),
+                    )
+
+                    # Re-point memory graph tables if they exist
+                    for table in ["claims", "weaknesses", "topics_covered", "strengths"]:
+                        cursor.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                            (table,),
+                        )
+                        if cursor.fetchone():
+                            cursor.execute(
+                                f"UPDATE {table} SET candidate_id = ? WHERE candidate_id = ?",
+                                (canonical_id, dup_id),
+                            )
+
+                    # Update or clean up candidates table
+                    cursor.execute("SELECT 1 FROM candidates WHERE id = ?", (canonical_id,))
+                    if cursor.fetchone():
+                        cursor.execute("DELETE FROM candidates WHERE id = ?", (dup_id,))
+                    else:
+                        cursor.execute(
+                            "UPDATE candidates SET id = ? WHERE id = ?",
+                            (canonical_id, dup_id),
+                        )
+
+                    # Delete duplicate user row
+                    cursor.execute("DELETE FROM users WHERE id = ?", (dup_id,))
+
+                # Normalize canonical email
+                cursor.execute(
+                    "UPDATE users SET email = ? WHERE id = ?",
+                    (norm_email, canonical_id),
+                )
+
+            # 2. Normalize remaining legacy emails to lowercase
+            cursor.execute(
+                "UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL AND email != LOWER(TRIM(email))"
+            )
+
+            # 3. Create unique index on email with NOCASE collation to enforce case-insensitivity on existing and new tables
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase ON users(email COLLATE NOCASE)"
+            )
+
             conn.commit()
 
     def _format_user_record(self, row: sqlite3.Row) -> Dict[str, Any]:
@@ -746,7 +867,7 @@ class UserManager:
             cursor = conn.cursor()
             # If user with this email already exists, update and link
             if email_clean:
-                cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
+                cursor.execute("SELECT id FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
                 existing = cursor.fetchone()
                 if existing:
                     existing_id = existing["id"]
