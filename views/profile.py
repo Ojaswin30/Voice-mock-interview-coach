@@ -131,6 +131,7 @@ def render_profile_page(
                 if success:
                     st.success("✅ Password updated successfully!")
                     # Refresh session user
-                    st.session_state.user = user_manager.get_user(candidate_id)
+                    st.session_state.user = user_manager.get_user_by_id(candidate_id)
+                    st.rerun()
                 else:
                     st.error(f"❌ Failed to update password: {msg}")

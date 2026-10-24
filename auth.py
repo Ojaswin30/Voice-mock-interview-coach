@@ -501,7 +501,7 @@ class UserManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE,
+                    email TEXT UNIQUE COLLATE NOCASE,
                     name TEXT,
                     password_hash TEXT,
                     picture_url TEXT,
@@ -585,13 +585,13 @@ class UserManager:
         return user
 
     def user_exists(self, email: str) -> bool:
-        """Checks if a user already exists with the given email address."""
+        """Checks if a user already exists with the given email address (case-insensitive)."""
         email_clean = (email or "").strip().lower()
         if not email_clean:
             return False
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
+            cursor.execute("SELECT id FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
             return cursor.fetchone() is not None
 
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -605,13 +605,13 @@ class UserManager:
             return None
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
-        """Retrieves and decrypts a user record by email."""
+        """Retrieves and decrypts a user record by email (case-insensitive)."""
         email_clean = (email or "").strip().lower()
         if not email_clean:
             return None
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE email = ?", (email_clean,))
+            cursor.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
             row = cursor.fetchone()
             if row:
                 return self._format_user_record(row)
@@ -635,7 +635,7 @@ class UserManager:
         name_clean = (name or "").strip() or email_clean.split("@")[0].title()
 
         if self.user_exists(email_clean):
-            raise ValueError(f"User with email '{email_clean}' already exists.")
+            raise ValueError(f"Email already exists: An account with '{email_clean}' is already registered in the system.")
 
         user_id = f"usr_{secrets.token_hex(6)}"
         pwd_hash = hash_password(password)
@@ -803,14 +803,33 @@ class UserManager:
             "auth_provider": auth_provider,
         }
 
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for get_user_by_id."""
+        return self.get_user_by_id(user_id)
+
     def update_user_password(
-        self, user_id: str, old_password: str, new_password: str
+        self,
+        user_id: str,
+        new_password: str = "",
+        current_password: Optional[str] = None,
+        old_password: Optional[str] = None,
+        **kwargs: Any,
     ) -> Tuple[bool, str]:
         """
         Updates the user's password.
-        If the user has an existing password, verifies old_password first.
+        Supports both current_password and old_password keyword arguments.
+        If the user has an existing password, verifies current_password/old_password first.
         If social login (no password set), allows setting a new password directly.
         """
+        if not new_password and "new_password" in kwargs:
+            new_password = kwargs["new_password"]
+        if not current_password and "current_password" in kwargs:
+            current_password = kwargs["current_password"]
+        if not old_password and "old_password" in kwargs:
+            old_password = kwargs["old_password"]
+
+        pwd_to_check = current_password if current_password is not None else old_password
+
         if not new_password or len(new_password) < 6:
             return False, "New password must be at least 6 characters long."
 
@@ -820,9 +839,9 @@ class UserManager:
 
         current_hash = user.get("password_hash")
         if current_hash:
-            if not old_password:
+            if not pwd_to_check:
                 return False, "Please enter your current password."
-            if not verify_password(old_password, current_hash):
+            if not verify_password(pwd_to_check, current_hash):
                 return False, "Current password is incorrect."
 
         new_hash = hash_password(new_password)
