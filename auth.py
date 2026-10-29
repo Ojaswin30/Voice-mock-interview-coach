@@ -646,15 +646,47 @@ class UserManager:
                                 (canonical_id, dup_id),
                             )
 
-                    # Update or clean up candidates table
-                    cursor.execute("SELECT 1 FROM candidates WHERE id = ?", (canonical_id,))
-                    if cursor.fetchone():
-                        cursor.execute("DELETE FROM candidates WHERE id = ?", (dup_id,))
-                    else:
-                        cursor.execute(
-                            "UPDATE candidates SET id = ? WHERE id = ?",
-                            (canonical_id, dup_id),
-                        )
+                    # Merge and clean up candidates table
+                    cursor.execute("SELECT * FROM candidates WHERE id = ?", (canonical_id,))
+                    canonical_cand = cursor.fetchone()
+                    cursor.execute("SELECT * FROM candidates WHERE id = ?", (dup_id,))
+                    dup_cand = cursor.fetchone()
+
+                    if dup_cand:
+                        if canonical_cand:
+                            cand_updates = []
+                            cand_params = []
+                            for field in ["name", "target_role"]:
+                                can_val = canonical_cand[field]
+                                dup_val = dup_cand[field]
+                                can_populated = can_val is not None and bool(str(can_val).strip())
+                                dup_populated = dup_val is not None and bool(str(dup_val).strip())
+                                if not can_populated and dup_populated:
+                                    cand_updates.append(f"{field} = ?")
+                                    cand_params.append(dup_val.strip() if isinstance(dup_val, str) else dup_val)
+
+                            dup_created = dup_cand["created_at"]
+                            can_created = canonical_cand["created_at"]
+                            if dup_created and str(dup_created).strip() and (
+                                not can_created
+                                or not str(can_created).strip()
+                                or str(dup_created) < str(can_created)
+                            ):
+                                cand_updates.append("created_at = ?")
+                                cand_params.append(dup_created)
+
+                            if cand_updates:
+                                cand_params.append(canonical_id)
+                                cursor.execute(
+                                    f"UPDATE candidates SET {', '.join(cand_updates)} WHERE id = ?",
+                                    cand_params,
+                                )
+                            cursor.execute("DELETE FROM candidates WHERE id = ?", (dup_id,))
+                        else:
+                            cursor.execute(
+                                "UPDATE candidates SET id = ? WHERE id = ?",
+                                (canonical_id, dup_id),
+                            )
 
                     # Delete duplicate user row
                     cursor.execute("DELETE FROM users WHERE id = ?", (dup_id,))
