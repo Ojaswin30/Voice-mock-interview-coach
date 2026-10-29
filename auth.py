@@ -501,7 +501,7 @@ class UserManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE,
+                    email TEXT UNIQUE COLLATE NOCASE,
                     name TEXT,
                     password_hash TEXT,
                     picture_url TEXT,
@@ -554,6 +554,159 @@ class UserManager:
                 if col_name not in existing_cols:
                     cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
 
+            # Safe schema migration for existing databases:
+            # 1. Resolve duplicate candidate rows whose emails differ only by case
+            cursor.execute("""
+                SELECT LOWER(TRIM(email)) AS norm_email
+                FROM users
+                WHERE email IS NOT NULL AND TRIM(email) != ''
+                GROUP BY LOWER(TRIM(email))
+                HAVING COUNT(*) > 1
+            """)
+            dup_groups = [r["norm_email"] for r in cursor.fetchall()]
+            for norm_email in dup_groups:
+                cursor.execute("""
+                    SELECT * FROM users
+                    WHERE LOWER(TRIM(email)) = ?
+                    ORDER BY
+                        (password_hash IS NOT NULL AND password_hash != '') DESC,
+                        last_login DESC,
+                        created_at DESC,
+                        id ASC
+                """, (norm_email,))
+                rows = [dict(r) for r in cursor.fetchall()]
+                if not rows:
+                    continue
+
+                canonical = rows[0]
+                canonical_id = canonical["id"]
+
+                for dup in rows[1:]:
+                    dup_id = dup["id"]
+
+                    # Merge non-empty user fields into canonical if canonical is missing them
+                    merge_updates = []
+                    merge_params = []
+                    for field in [
+                        "name",
+                        "password_hash",
+                        "picture_url",
+                        "target_role",
+                        "experience_level",
+                        "encrypted_profile",
+                    ]:
+                        if not canonical.get(field) and dup.get(field):
+                            merge_updates.append(f"{field} = ?")
+                            merge_params.append(dup[field])
+                            canonical[field] = dup[field]
+
+                    if merge_updates:
+                        merge_params.append(canonical_id)
+                        cursor.execute(
+                            f"UPDATE users SET {', '.join(merge_updates)} WHERE id = ?",
+                            merge_params,
+                        )
+
+                    # Preserve earliest created_at and latest last_login
+                    if dup.get("created_at") and (
+                        not canonical.get("created_at")
+                        or dup["created_at"] < canonical["created_at"]
+                    ):
+                        cursor.execute(
+                            "UPDATE users SET created_at = ? WHERE id = ?",
+                            (dup["created_at"], canonical_id),
+                        )
+                        canonical["created_at"] = dup["created_at"]
+
+                    if dup.get("last_login") and (
+                        not canonical.get("last_login")
+                        or dup["last_login"] > canonical["last_login"]
+                    ):
+                        cursor.execute(
+                            "UPDATE users SET last_login = ? WHERE id = ?",
+                            (dup["last_login"], canonical_id),
+                        )
+                        canonical["last_login"] = dup["last_login"]
+
+                    # Re-point interview sessions to canonical user
+                    cursor.execute(
+                        "UPDATE interview_sessions SET candidate_id = ? WHERE candidate_id = ?",
+                        (canonical_id, dup_id),
+                    )
+
+                    # Re-point memory graph tables if they exist
+                    for table in ["claims", "weaknesses", "topics_covered", "strengths"]:
+                        cursor.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                            (table,),
+                        )
+                        if cursor.fetchone():
+                            cursor.execute(
+                                f"UPDATE {table} SET candidate_id = ? WHERE candidate_id = ?",
+                                (canonical_id, dup_id),
+                            )
+
+                    # Merge and clean up candidates table
+                    cursor.execute("SELECT * FROM candidates WHERE id = ?", (canonical_id,))
+                    canonical_cand = cursor.fetchone()
+                    cursor.execute("SELECT * FROM candidates WHERE id = ?", (dup_id,))
+                    dup_cand = cursor.fetchone()
+
+                    if dup_cand:
+                        if canonical_cand:
+                            cand_updates = []
+                            cand_params = []
+                            for field in ["name", "target_role"]:
+                                can_val = canonical_cand[field]
+                                dup_val = dup_cand[field]
+                                can_populated = can_val is not None and bool(str(can_val).strip())
+                                dup_populated = dup_val is not None and bool(str(dup_val).strip())
+                                if not can_populated and dup_populated:
+                                    cand_updates.append(f"{field} = ?")
+                                    cand_params.append(dup_val.strip() if isinstance(dup_val, str) else dup_val)
+
+                            dup_created = dup_cand["created_at"]
+                            can_created = canonical_cand["created_at"]
+                            if dup_created and str(dup_created).strip() and (
+                                not can_created
+                                or not str(can_created).strip()
+                                or str(dup_created) < str(can_created)
+                            ):
+                                cand_updates.append("created_at = ?")
+                                cand_params.append(dup_created)
+
+                            if cand_updates:
+                                cand_params.append(canonical_id)
+                                cursor.execute(
+                                    f"UPDATE candidates SET {', '.join(cand_updates)} WHERE id = ?",
+                                    cand_params,
+                                )
+                            cursor.execute("DELETE FROM candidates WHERE id = ?", (dup_id,))
+                        else:
+                            cursor.execute(
+                                "UPDATE candidates SET id = ? WHERE id = ?",
+                                (canonical_id, dup_id),
+                            )
+
+                    # Delete duplicate user row
+                    cursor.execute("DELETE FROM users WHERE id = ?", (dup_id,))
+
+                # Normalize canonical email
+                cursor.execute(
+                    "UPDATE users SET email = ? WHERE id = ?",
+                    (norm_email, canonical_id),
+                )
+
+            # 2. Normalize remaining legacy emails to lowercase
+            cursor.execute(
+                "UPDATE users SET email = LOWER(TRIM(email)) WHERE email IS NOT NULL AND email != LOWER(TRIM(email))"
+            )
+
+            # 3. Create unique index on email with NOCASE collation to enforce case-insensitivity on existing and new tables
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase ON users(email COLLATE NOCASE)"
+            )
+
             conn.commit()
 
     def _format_user_record(self, row: sqlite3.Row) -> Dict[str, Any]:
@@ -585,13 +738,13 @@ class UserManager:
         return user
 
     def user_exists(self, email: str) -> bool:
-        """Checks if a user already exists with the given email address."""
+        """Checks if a user already exists with the given email address (case-insensitive)."""
         email_clean = (email or "").strip().lower()
         if not email_clean:
             return False
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
+            cursor.execute("SELECT id FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
             return cursor.fetchone() is not None
 
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -605,13 +758,13 @@ class UserManager:
             return None
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
-        """Retrieves and decrypts a user record by email."""
+        """Retrieves and decrypts a user record by email (case-insensitive)."""
         email_clean = (email or "").strip().lower()
         if not email_clean:
             return None
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE email = ?", (email_clean,))
+            cursor.execute("SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
             row = cursor.fetchone()
             if row:
                 return self._format_user_record(row)
@@ -635,7 +788,7 @@ class UserManager:
         name_clean = (name or "").strip() or email_clean.split("@")[0].title()
 
         if self.user_exists(email_clean):
-            raise ValueError(f"User with email '{email_clean}' already exists.")
+            raise ValueError(f"Email already exists: An account with '{email_clean}' is already registered in the system.")
 
         user_id = f"usr_{secrets.token_hex(6)}"
         pwd_hash = hash_password(password)
@@ -746,7 +899,7 @@ class UserManager:
             cursor = conn.cursor()
             # If user with this email already exists, update and link
             if email_clean:
-                cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
+                cursor.execute("SELECT id FROM users WHERE email = ? COLLATE NOCASE", (email_clean,))
                 existing = cursor.fetchone()
                 if existing:
                     existing_id = existing["id"]
@@ -803,14 +956,33 @@ class UserManager:
             "auth_provider": auth_provider,
         }
 
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for get_user_by_id."""
+        return self.get_user_by_id(user_id)
+
     def update_user_password(
-        self, user_id: str, old_password: str, new_password: str
+        self,
+        user_id: str,
+        new_password: str = "",
+        current_password: Optional[str] = None,
+        old_password: Optional[str] = None,
+        **kwargs: Any,
     ) -> Tuple[bool, str]:
         """
         Updates the user's password.
-        If the user has an existing password, verifies old_password first.
+        Supports both current_password and old_password keyword arguments.
+        If the user has an existing password, verifies current_password/old_password first.
         If social login (no password set), allows setting a new password directly.
         """
+        if not new_password and "new_password" in kwargs:
+            new_password = kwargs["new_password"]
+        if not current_password and "current_password" in kwargs:
+            current_password = kwargs["current_password"]
+        if not old_password and "old_password" in kwargs:
+            old_password = kwargs["old_password"]
+
+        pwd_to_check = current_password if current_password is not None else old_password
+
         if not new_password or len(new_password) < 6:
             return False, "New password must be at least 6 characters long."
 
@@ -820,9 +992,9 @@ class UserManager:
 
         current_hash = user.get("password_hash")
         if current_hash:
-            if not old_password:
+            if not pwd_to_check:
                 return False, "Please enter your current password."
-            if not verify_password(old_password, current_hash):
+            if not verify_password(pwd_to_check, current_hash):
                 return False, "Current password is incorrect."
 
         new_hash = hash_password(new_password)
